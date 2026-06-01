@@ -42,17 +42,34 @@ interface AppState {
   logout: () => void;
 }
 
-// Bridge our `storage` util to Zustand's persist API
+// Bridge our `storage` util to Zustand's persist API.
+// SSR-safe: returns null synchronously when running outside a browser window
+// (Expo Router web SSR), so initial hydration won't throw on AsyncStorage access.
+const isBrowser =
+  typeof window !== 'undefined' && typeof window.document !== 'undefined';
+
 const zustandStorage = {
   getItem: async (name: string) => {
-    const v = await storage.getItem<string>(name, '');
-    return typeof v === 'string' && v.length > 0 ? v : null;
+    if (!isBrowser && typeof globalThis === 'object' && !('expo' in (globalThis as any))) {
+      // Pure Node SSR: skip read
+      return null;
+    }
+    try {
+      const v = await storage.getItem<string>(name, '');
+      return typeof v === 'string' && v.length > 0 ? v : null;
+    } catch {
+      return null;
+    }
   },
   setItem: async (name: string, value: string) => {
-    await storage.setItem(name, value);
+    try {
+      await storage.setItem(name, value);
+    } catch {}
   },
   removeItem: async (name: string) => {
-    await storage.removeItem(name);
+    try {
+      await storage.removeItem(name);
+    } catch {}
   },
 };
 

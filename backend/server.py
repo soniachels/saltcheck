@@ -774,15 +774,13 @@ async def register_push(body: RegisterPushBody):
     try:
         resp = await _push_client.post("/api/v1/push/users/register", json=body.model_dump())
         if resp.status_code == 401:
-            raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+            # Placeholder/missing key — graceful skip so the app keeps working in preview
+            return {"status": "skipped", "reason": "EMERGENT_PUSH_KEY missing or invalid"}
         if resp.status_code >= 500:
-            raise HTTPException(502, "Push provider unavailable")
+            return {"status": "skipped", "reason": "Push provider unavailable"}
         resp.raise_for_status()
         return {"status": "registered"}
-    except HTTPException:
-        raise
     except Exception as e:
-        # Don't fail the app if push registration fails (e.g. placeholder key in preview)
         return {"status": "skipped", "reason": str(e)}
 
 
