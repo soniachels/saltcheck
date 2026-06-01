@@ -12,9 +12,11 @@ import {
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Layout, Spacing, BorderRadius } from '../../src/theme';
 import { Button } from '../../src/components/Button';
-import { Card } from '../../src/components/Card';
+import { CategoryCard } from '../../src/components/CategoryCard';
+import { PepperBubble } from '../../src/components/PepperBubble';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { useVoiceRecorder } from '../../src/hooks/useVoiceRecorder';
@@ -26,6 +28,13 @@ function formatDuration(ms: number) {
   return `${m}:${s}`;
 }
 
+const SPICE_META: Record<string, { dot: string; label: string }> = {
+  mild: { dot: '○', label: 'MILD' },
+  medium: { dot: '◐', label: 'MEDIUM' },
+  spicy: { dot: '●', label: 'SPICY' },
+  extra_spicy: { dot: '●', label: 'EXTRA SPICY' },
+};
+
 export default function PepperCheckinScreen() {
   const [rawDump, setRawDump] = useState('');
   const [loading, setLoading] = useState(false);
@@ -34,10 +43,9 @@ export default function PepperCheckinScreen() {
   const router = useRouter();
   const voice = useVoiceRecorder();
 
-  // Clear response when re-entering the screen (fresh dump experience)
   useFocusEffect(
     useCallback(() => {
-      // no-op on focus, intentionally keep response for navigation
+      // intentionally keep response when re-focusing
     }, [])
   );
 
@@ -47,14 +55,16 @@ export default function PepperCheckinScreen() {
     setLoading(true);
     setResponse(null);
     try {
-      const result = await apiClient.post('/pepper/checkin', {
-        raw_dump: rawDump,
-        spice_level: pepperSpiceLevel,
-        nickname: nickname || undefined,
-      }, {
-        params: { user_id: currentUserId },
-      });
-      
+      const result = await apiClient.post(
+        '/pepper/checkin',
+        {
+          raw_dump: rawDump,
+          spice_level: pepperSpiceLevel,
+          nickname: nickname || undefined,
+        },
+        { params: { user_id: currentUserId } }
+      );
+
       setResponse(result.data);
       setRawDump('');
     } catch (error) {
@@ -69,7 +79,6 @@ export default function PepperCheckinScreen() {
     if (voice.isRecording) {
       const text = await voice.stopAndTranscribe();
       if (text) {
-        // Append to existing dump if any (for incremental voice notes)
         setRawDump((prev) => (prev ? `${prev}\n\n${text}` : text));
       }
     } else {
@@ -77,219 +86,288 @@ export default function PepperCheckinScreen() {
     }
   };
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView 
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Trust Signal */}
-        <View style={styles.trustSignal}>
-          <Text style={styles.trustText}>Your dump is private. You choose what gets saved.</Text>
-        </View>
+  const spice = SPICE_META[pepperSpiceLevel] || SPICE_META.medium;
 
-        {/* Input Box */}
-        <Card variant="pepper">
-          <View style={styles.labelRow}>
-            <Text style={styles.label}>DUMP EVERYTHING</Text>
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Header row with close button */}
+          <View style={styles.headerRow}>
             <View style={styles.spiceTag}>
-              <Text style={styles.spiceTagText}>
-                {pepperSpiceLevel === 'mild' ? '○ MILD' : pepperSpiceLevel === 'medium' ? '◐ MEDIUM' : '● EXTRA SPICY'}
-              </Text>
+              <Text style={styles.spiceDot}>{spice.dot}</Text>
+              <Text style={styles.spiceLabel}>{spice.label}</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={styles.closeBtn}
+              testID="pepper-close-btn"
+            >
+              <Ionicons name="close" size={22} color={Colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Hero */}
+          <View style={styles.hero}>
+            <Text style={styles.heroLabel}>* PEPPER CHECK-IN</Text>
+            <Text style={styles.heroTitle}>dump it.</Text>
+            <Text style={styles.heroSub}>tasks, money, body, people, bullshit. i'll sort it.</Text>
+          </View>
+
+          <PepperBubble label="* PEPPER" variant="red" small>
+            Stay private. You choose what gets saved. Don't pretty it up.
+          </PepperBubble>
+
+          {/* Input */}
+          <View style={styles.inputCard}>
+            <Text style={styles.inputLabel}>BRAIN DUMP</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="what's the noise today?"
+              placeholderTextColor={Colors.steelBlueGrey}
+              value={rawDump}
+              onChangeText={setRawDump}
+              multiline
+              numberOfLines={8}
+              textAlignVertical="top"
+              testID="pepper-dump-input"
+              editable={!voice.isRecording && !voice.isTranscribing}
+            />
+
+            {/* Voice + Action Row */}
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={[
+                  styles.micButton,
+                  voice.isRecording && styles.micButtonActive,
+                  voice.isTranscribing && styles.micButtonTranscribing,
+                ]}
+                onPress={handleVoiceToggle}
+                disabled={loading || voice.isTranscribing}
+                testID="pepper-voice-btn"
+              >
+                {voice.isTranscribing ? (
+                  <ActivityIndicator color={Colors.saltBone} size="small" />
+                ) : voice.isRecording ? (
+                  <Ionicons name="stop" size={22} color={Colors.saltBone} />
+                ) : (
+                  <Ionicons name="mic" size={22} color={Colors.saltBone} />
+                )}
+              </TouchableOpacity>
+
+              {voice.isRecording ? (
+                <View style={styles.recordingMeta}>
+                  <View style={styles.recordingDot} />
+                  <Text style={styles.recordingText}>
+                    REC {formatDuration(voice.durationMs)}
+                  </Text>
+                </View>
+              ) : voice.isTranscribing ? (
+                <Text style={styles.transcribingText}>PEPPER IS LISTENING BACK…</Text>
+              ) : (
+                <Button
+                  title={loading ? 'PEPPER IS READING…' : 'CUT IT'}
+                  onPress={handleCheckin}
+                  variant="primary"
+                  loading={loading}
+                  disabled={!rawDump.trim() || loading}
+                  style={styles.button}
+                />
+              )}
             </View>
           </View>
-          <TextInput
-            style={styles.input}
-            placeholder="Tasks, money, body, people, bullshit. I'll sort it."
-            placeholderTextColor={Colors.steelBlueGrey}
-            value={rawDump}
-            onChangeText={setRawDump}
-            multiline
-            numberOfLines={8}
-            textAlignVertical="top"
-            testID="pepper-dump-input"
-            editable={!voice.isRecording && !voice.isTranscribing}
-          />
 
-          {/* Voice + Action Row */}
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              style={[
-                styles.micButton,
-                voice.isRecording && styles.micButtonActive,
-                voice.isTranscribing && styles.micButtonTranscribing,
-              ]}
-              onPress={handleVoiceToggle}
-              disabled={loading || voice.isTranscribing}
-              testID="pepper-voice-btn"
-            >
-              {voice.isTranscribing ? (
-                <ActivityIndicator color={Colors.saltBone} size="small" />
-              ) : voice.isRecording ? (
-                <Ionicons name="stop" size={22} color={Colors.saltBone} />
-              ) : (
-                <Ionicons name="mic" size={22} color={Colors.saltBone} />
+          {/* PEPPER Response */}
+          {response && response.ai_response && (
+            <View style={styles.responseContainer}>
+              <PepperBubble label="* PEPPER" variant="red">
+                {response.ai_response.quick_read}
+              </PepperBubble>
+
+              {response.ai_response.salt_check &&
+                response.ai_response.salt_check.length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>TODAY'S SALT CHECK.</Text>
+                    <Text style={styles.sectionHint}>top 3. not top 47.</Text>
+                    {response.ai_response.salt_check
+                      .slice(0, 3)
+                      .map((item: string, i: number) => (
+                        <CategoryCard
+                          key={i}
+                          title={item}
+                          badge={`${i + 1}`}
+                          variant={i === 0 ? 'lime' : 'dark'}
+                        />
+                      ))}
+                  </>
+                )}
+
+              {response.ai_response.parked && response.ai_response.parked.length > 0 && (
+                <>
+                  <Text style={styles.sectionLabel}>PARKED.</Text>
+                  <Text style={styles.sectionHint}>still there when you're ready.</Text>
+                  {response.ai_response.parked.map((item: string, i: number) => (
+                    <CategoryCard key={i} title={item} badge="P" variant="dark" />
+                  ))}
+                </>
               )}
-            </TouchableOpacity>
 
-            {voice.isRecording ? (
-              <View style={styles.recordingMeta}>
-                <View style={styles.recordingDot} />
-                <Text style={styles.recordingText}>RECORDING {formatDuration(voice.durationMs)}</Text>
-              </View>
-            ) : voice.isTranscribing ? (
-              <Text style={styles.transcribingText}>PEPPER IS LISTENING BACK...</Text>
-            ) : (
+              {response.ai_response.money_check && (
+                <>
+                  <Text style={styles.sectionLabel}>MONEY CHECK.</Text>
+                  <PepperBubble variant="lime">
+                    {response.ai_response.money_check}
+                  </PepperBubble>
+                </>
+              )}
+
+              {response.ai_response.body_check && (
+                <>
+                  <Text style={styles.sectionLabel}>BODY CHECK.</Text>
+                  <PepperBubble variant="lilac">
+                    {response.ai_response.body_check}
+                  </PepperBubble>
+                </>
+              )}
+
+              {response.ai_response.next_sane_step && (
+                <>
+                  <Text style={styles.sectionLabel}>NEXT SANE STEP.</Text>
+                  <CategoryCard
+                    title={response.ai_response.next_sane_step}
+                    icon="flame"
+                    variant="red"
+                    large
+                  />
+                </>
+              )}
+
+              {response.ai_response.closer && (
+                <PepperBubble variant="dark" small style={{ marginTop: Spacing.md }}>
+                  {response.ai_response.closer}
+                </PepperBubble>
+              )}
+
               <Button
-                title={loading ? 'PEPPER IS READING...' : 'LET PEPPER CUT IT'}
-                onPress={handleCheckin}
+                title="SEE IT ON TODAY"
+                onPress={() => router.push('/(tabs)')}
                 variant="primary"
-                loading={loading}
-                disabled={!rawDump.trim() || loading}
-                style={styles.button}
+                style={styles.viewTodayBtn}
+                testID="view-on-today-btn"
               />
-            )}
-          </View>
-        </Card>
+              <Button
+                title="DUMP AGAIN"
+                onPress={() => setResponse(null)}
+                variant="ghost"
+                style={{ marginTop: Spacing.sm }}
+              />
+            </View>
+          )}
 
-        {/* PEPPER Response */}
-        {response && response.ai_response && (
-          <View style={styles.responseContainer}>
-            <Card variant="pepper">
-              <Text style={styles.sectionLabel}>QUICK READ</Text>
-              <Text style={styles.quickRead}>{response.ai_response.quick_read}</Text>
-            </Card>
-
-            {response.ai_response.salt_check && response.ai_response.salt_check.length > 0 && (
-              <Card variant="default">
-                <Text style={styles.sectionLabel}>TODAY'S SALT CHECK</Text>
-                <Text style={styles.subtitle}>Top 3. Not top 47.</Text>
-                {response.ai_response.salt_check.map((item: string, index: number) => (
-                  <View key={index} style={styles.listItem}>
-                    <Text style={styles.bullet}>•</Text>
-                    <Text style={styles.listText}>{item}</Text>
-                  </View>
-                ))}
-              </Card>
-            )}
-
-            {response.ai_response.parked && response.ai_response.parked.length > 0 && (
-              <Card variant="parked">
-                <Text style={styles.sectionLabel}>PARKED</Text>
-                <Text style={styles.subtitle}>It'll still be there when you're ready.</Text>
-                {response.ai_response.parked.map((item: string, index: number) => (
-                  <View key={index} style={styles.listItem}>
-                    <Text style={styles.parkedBullet}>P</Text>
-                    <Text style={styles.parkedText}>{item}</Text>
-                  </View>
-                ))}
-              </Card>
-            )}
-
-            {response.ai_response.money_check && (
-              <Card variant="money">
-                <Text style={styles.sectionLabel}>MONEY CHECK</Text>
-                <Text style={styles.checkText}>{response.ai_response.money_check}</Text>
-              </Card>
-            )}
-
-            {response.ai_response.body_check && (
-              <Card variant="body">
-                <Text style={styles.sectionLabel}>BODY CHECK</Text>
-                <Text style={styles.checkText}>{response.ai_response.body_check}</Text>
-              </Card>
-            )}
-
-            <Card style={styles.nextStepCard}>
-              <Text style={styles.nextStepLabel}>NEXT SANE STEP</Text>
-              <Text style={styles.nextStep}>{response.ai_response.next_sane_step}</Text>
-            </Card>
-
-            {response.ai_response.closer && (
-              <View style={styles.closer}>
-                <Text style={styles.closerText}>{response.ai_response.closer}</Text>
-              </View>
-            )}
-
-            <Button
-              title="SEE IT ON TODAY"
-              onPress={() => router.push('/(tabs)')}
-              variant="secondary"
-              style={styles.viewTodayBtn}
-              testID="view-on-today-btn"
-            />
-          </View>
-        )}
-      </ScrollView>
-    </KeyboardAvoidingView>
+          <View style={{ height: 80 }} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  scrollView: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
   scrollContent: {
     padding: Layout.screenPadding,
-    paddingBottom: 100,
+    paddingBottom: 80,
   },
-  trustSignal: {
-    backgroundColor: Colors.charcoal,
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    marginBottom: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  trustText: {
-    color: Colors.steelBlueGrey,
-    fontSize: Typography.fontSize.sm,
-    textAlign: 'center',
-    letterSpacing: 0.5,
-  },
-  labelRow: {
+  headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.sm,
-  },
-  label: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.pepperRed,
-    fontWeight: '600',
-    letterSpacing: 0.5,
+    marginBottom: Spacing.lg,
   },
   spiceTag: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 4,
-    borderRadius: BorderRadius.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.charcoalRaised,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
     borderWidth: 1,
-    borderColor: Colors.steelBlueGrey,
+    borderColor: Colors.border,
+    gap: 6,
   },
-  spiceTagText: {
-    fontSize: 10,
-    color: Colors.steelBlueGrey,
-    fontWeight: '600',
-    letterSpacing: 0.5,
+  spiceDot: {
+    color: Colors.brightRed,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: '800',
+  },
+  spiceLabel: {
+    color: Colors.text,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+  closeBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hero: { marginBottom: Spacing.lg },
+  heroLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.brightRed,
+    fontWeight: '800',
+    letterSpacing: 3,
+    marginBottom: 6,
+  },
+  heroTitle: {
+    fontSize: Typography.fontSize.display,
+    fontWeight: '900',
+    color: Colors.text,
+    letterSpacing: 1,
+  },
+  heroSub: {
+    fontSize: Typography.fontSize.base,
+    color: Colors.textSubtle,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  inputCard: {
+    backgroundColor: Colors.charcoalRaised,
+    borderRadius: BorderRadius.xl,
+    padding: Layout.cardPaddingLarge,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: Spacing.lg,
+  },
+  inputLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.brightRed,
+    fontWeight: '800',
+    letterSpacing: 2,
+    marginBottom: Spacing.sm,
   },
   input: {
     borderWidth: 1,
     borderColor: Colors.border,
-    borderRadius: BorderRadius.md,
+    borderRadius: BorderRadius.lg,
     padding: Spacing.md,
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.md,
     color: Colors.text,
     backgroundColor: Colors.inkBlack,
-    minHeight: 150,
+    minHeight: 160,
     marginBottom: Spacing.md,
+    lineHeight: Typography.fontSize.md * 1.5,
   },
   actionRow: {
     flexDirection: 'row',
@@ -297,17 +375,18 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   micButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: Colors.charcoal,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: Colors.inkBlack,
     borderWidth: 1,
-    borderColor: Colors.pepperRed,
+    borderColor: Colors.brightRed,
     alignItems: 'center',
     justifyContent: 'center',
   },
   micButtonActive: {
-    backgroundColor: Colors.pepperRed,
+    backgroundColor: Colors.brightRed,
+    borderColor: Colors.brightRed,
   },
   micButtonTranscribing: {
     backgroundColor: Colors.darkGreen,
@@ -319,7 +398,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
-    height: 48,
+    height: 52,
   },
   recordingDot: {
     width: 10,
@@ -330,111 +409,31 @@ const styles = StyleSheet.create({
   recordingText: {
     color: Colors.brightRed,
     fontSize: Typography.fontSize.sm,
-    fontWeight: '700',
+    fontWeight: '800',
     letterSpacing: 1,
   },
   transcribingText: {
     flex: 1,
     color: Colors.pickleLime,
     fontSize: Typography.fontSize.sm,
-    fontWeight: '600',
+    fontWeight: '800',
     letterSpacing: 1,
     paddingLeft: Spacing.md,
   },
-  button: {
-    flex: 1,
-  },
-  responseContainer: {
-    marginTop: Spacing.lg,
-  },
+  button: { flex: 1 },
+  responseContainer: { marginTop: Spacing.sm },
   sectionLabel: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.pepperRed,
-    fontWeight: '600',
-    letterSpacing: 1,
-    marginBottom: Spacing.xs,
-  },
-  subtitle: {
     fontSize: Typography.fontSize.xs,
-    color: Colors.steelBlueGrey,
-    marginBottom: Spacing.md,
-  },
-  quickRead: {
-    fontSize: Typography.fontSize.lg,
-    color: Colors.text,
-    fontWeight: '600',
-    lineHeight: Typography.fontSize.lg * 1.5,
-  },
-  listItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: Spacing.sm,
-  },
-  bullet: {
-    color: Colors.pickleLime,
-    fontSize: Typography.fontSize.xl,
-    marginRight: Spacing.sm,
-    lineHeight: Typography.fontSize.base * 1.5,
-  },
-  listText: {
-    flex: 1,
-    color: Colors.text,
-    fontSize: Typography.fontSize.base,
-    lineHeight: Typography.fontSize.base * 1.5,
-  },
-  parkedBullet: {
-    color: Colors.steelBlueGrey,
-    fontSize: Typography.fontSize.sm,
-    fontWeight: '600',
-    marginRight: Spacing.sm,
-    width: 20,
-    height: 20,
-    borderWidth: 1,
-    borderColor: Colors.steelBlueGrey,
-    borderRadius: 10,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  parkedText: {
-    flex: 1,
-    color: Colors.steelBlueGrey,
-    fontSize: Typography.fontSize.base,
-    lineHeight: Typography.fontSize.base * 1.5,
-  },
-  checkText: {
-    color: Colors.text,
-    fontSize: Typography.fontSize.base,
-    lineHeight: Typography.fontSize.base * 1.5,
-  },
-  nextStepCard: {
-    backgroundColor: Colors.pepperRed,
-    borderWidth: 2,
-    borderColor: Colors.brightRed,
-  },
-  nextStepLabel: {
-    fontSize: Typography.fontSize.md,
-    color: Colors.saltBone,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-    marginBottom: Spacing.sm,
-  },
-  nextStep: {
-    fontSize: Typography.fontSize.lg,
-    color: Colors.saltBone,
-    fontWeight: '600',
-    lineHeight: Typography.fontSize.lg * 1.5,
-  },
-  closer: {
+    color: Colors.brightRed,
+    fontWeight: '800',
+    letterSpacing: 2,
     marginTop: Spacing.lg,
-    alignItems: 'center',
   },
-  closerText: {
-    color: Colors.text,
-    fontSize: Typography.fontSize.base,
+  sectionHint: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textSubtle,
+    marginBottom: Spacing.sm,
     fontStyle: 'italic',
-    textAlign: 'center',
   },
-  viewTodayBtn: {
-    marginTop: Spacing.lg,
-  },
+  viewTodayBtn: { marginTop: Spacing.lg },
 });

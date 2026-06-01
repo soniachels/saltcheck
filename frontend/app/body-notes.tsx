@@ -18,6 +18,7 @@ import { PepperBubble } from '../src/components/PepperBubble';
 import { ChipPicker } from '../src/components/ChipPicker';
 import { Button } from '../src/components/Button';
 import { Input } from '../src/components/Input';
+import { DatePicker } from '../src/components/DatePicker';
 import apiClient from '../src/services/api';
 import { useAppStore } from '../src/store/appStore';
 
@@ -376,7 +377,13 @@ export default function BodyScreen() {
           <ScrollView contentContainerStyle={styles.editorScroll}>
             <View style={styles.editorCard}>
               <Text style={styles.editorTitle}>CYCLE</Text>
-              <Input label="LAST PERIOD STARTED (YYYY-MM-DD)" value={cycleForm.period_started_on} onChangeText={(t) => setCycleForm({ ...cycleForm, period_started_on: t })} placeholder="2026-05-15" />
+              <DatePicker
+                label="LAST PERIOD STARTED"
+                value={cycleForm.period_started_on}
+                onChange={(v) => setCycleForm({ ...cycleForm, period_started_on: v })}
+                placeholder="Pick the start date"
+                variant="lilac"
+              />
               <Input label="PERIOD LENGTH (DAYS)" value={cycleForm.period_length_days} onChangeText={(t) => setCycleForm({ ...cycleForm, period_length_days: t })} keyboardType="number-pad" placeholder="5" />
               <Input label="CYCLE LENGTH (DAYS)" value={cycleForm.cycle_length_days} onChangeText={(t) => setCycleForm({ ...cycleForm, cycle_length_days: t })} keyboardType="number-pad" placeholder="28" />
               <View style={styles.editorActions}>
@@ -427,7 +434,13 @@ export default function BodyScreen() {
             <View style={styles.editorCard}>
               <Text style={styles.editorTitle}>NEW APPT</Text>
               <Input label="LABEL" value={apptForm.label} onChangeText={(t) => setApptForm({ ...apptForm, label: t })} placeholder="GP follow-up" autoFocus />
-              <Input label="DATE (YYYY-MM-DD)" value={apptForm.date} onChangeText={(t) => setApptForm({ ...apptForm, date: t })} placeholder="2026-06-15" />
+              <DatePicker
+                label="DATE"
+                value={apptForm.date}
+                onChange={(v) => setApptForm({ ...apptForm, date: v })}
+                placeholder="When?"
+                variant="lilac"
+              />
               <View style={styles.editorActions}>
                 <Button title="CANCEL" onPress={() => setApptEditor(false)} variant="ghost" />
                 <Button title="ADD" onPress={addAppt} variant="primary" />

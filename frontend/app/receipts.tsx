@@ -171,11 +171,22 @@ export default function ReceiptsScreen() {
       } else {
         await apiClient.post(`/person-notes?user_id=${currentUserId}`, payload);
       }
+      // Fully close both editor + advice — user can tap card again to re-ask PEPPER.
       setEditorVisible(false);
+      setActiveReceipt(null);
+      setAdvice(null);
       loadReceipts();
     } catch (e) {
       Alert.alert('Hiccup', 'Could not save. Try again.');
     }
+  };
+
+  const closeEditor = () => {
+    setEditorVisible(false);
+    // If this was a "new" receipt (no activeReceipt to view), clear everything
+    // If editing an existing one, clear activeReceipt to prevent advice modal popping back
+    setActiveReceipt(null);
+    setAdvice(null);
   };
 
   const deleteReceipt = (id: string) => {
@@ -417,7 +428,7 @@ export default function ReceiptsScreen() {
                 />
 
                 <View style={styles.editorActions}>
-                  <Button title="CANCEL" onPress={() => setEditorVisible(false)} variant="ghost" />
+                  <Button title="CANCEL" onPress={closeEditor} variant="ghost" />
                   <Button title="SAVE" onPress={saveReceipt} variant="primary" />
                 </View>
 

@@ -16,8 +16,10 @@ import { CategoryCard } from '../../src/components/CategoryCard';
 import { PepperBubble } from '../../src/components/PepperBubble';
 import { Button } from '../../src/components/Button';
 import { Input } from '../../src/components/Input';
+import { DatePicker } from '../../src/components/DatePicker';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
+import { getPepperGreeting } from '../../src/utils/pepperMood';
 
 export default function TodayScreen() {
   const { currentUserId, nickname } = useAppStore();
@@ -120,18 +122,27 @@ export default function TodayScreen() {
   const doneTasks = tasks.filter((t) => t.status === 'done');
   const parkedTasks = tasks.filter((t) => t.parked);
 
-  const greeting = nickname ? `hey ${nickname.toLowerCase()}.` : 'hey.';
+  const greeting = getPepperGreeting(todayDate);
+  const heroGreeting = greeting.greeting(nickname);
+
+  const accentColor =
+    greeting.accent === 'lime'
+      ? Colors.pickleLime
+      : greeting.accent === 'lilac'
+      ? Colors.softSpiceLilac
+      : Colors.brightRed;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Hero */}
         <View style={styles.hero}>
-          <Text style={styles.dateLabel}>
+          <Text style={[styles.dateLabel, { color: accentColor }]}>
             {dayName} · {monthDay.toUpperCase()}
           </Text>
-          <Text style={styles.heroTitle}>{greeting}</Text>
-          <Text style={styles.heroSub}>clean slate. let's not waste it.</Text>
+          <Text style={[styles.moodLabel, { color: accentColor }]}>{greeting.mood}</Text>
+          <Text style={styles.heroTitle}>{heroGreeting}</Text>
+          <Text style={styles.heroSub}>{greeting.vibe}</Text>
         </View>
 
         {/* Next Sane Step (if PEPPER's been here) */}
@@ -271,11 +282,12 @@ export default function TodayScreen() {
                 onChangeText={(t) => setTaskForm({ ...taskForm, next_action: t })}
                 placeholder="The actual next move"
               />
-              <Input
+              <DatePicker
                 label="DEADLINE"
                 value={taskForm.deadline}
-                onChangeText={(t) => setTaskForm({ ...taskForm, deadline: t })}
-                placeholder="YYYY-MM-DD (optional)"
+                onChange={(v) => setTaskForm({ ...taskForm, deadline: v })}
+                placeholder="Pick a deadline (optional)"
+                variant="red"
               />
               <View style={styles.editorActions}>
                 <Button title="CANCEL" onPress={() => setTaskModal(false)} variant="ghost" />
@@ -307,6 +319,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 2,
     marginBottom: Spacing.sm,
+  },
+  moodLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.brightRed,
+    fontWeight: '800',
+    letterSpacing: 3,
+    marginBottom: 4,
   },
   heroTitle: {
     fontSize: Typography.fontSize.display,
