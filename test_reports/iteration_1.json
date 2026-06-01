@@ -1,0 +1,50 @@
+{
+  "summary": "Comprehensive backend testing for Salt Check MVP via public ingress URL. 31/31 pytest cases passed (100%). All CRUD endpoints (users, daily-entries, projects, tasks, money-entries, body-logs, person-notes) function correctly with proper data persistence and 404 handling. PEPPER AI check-in successfully calls Emergent LLM (GPT-4.1) and returns structured JSON (quick_read, salt_check, parked, money_check, body_check, next_sane_step, closer). Crisis-keyword detection ('want to die') correctly bypasses the LLM and returns the hard-coded safe response with no sass and no 'park' language. PEPPER history endpoint returns past check-ins in created_at desc order. Backend MongoDB persistence verified via Create -> GET round-trips.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /", "issue": "Root route is not exposed via Kubernetes ingress (only /api/* is routed). Not blocking - /api/users and other /api endpoints reachable. Consider mounting health under /api/health for prod readiness probes."},
+      {"endpoint": "GET /api/users/{user_id}", "issue": "Uses Mongo ObjectId() casting on raw path param; passing a non-ObjectId string raises bson.errors.InvalidId and returns 500 instead of 404/400. Add try/except and return 404."},
+      {"endpoint": "PUT/DELETE /api/projects|tasks|daily-entries|money-entries|body-logs|person-notes/{id}", "issue": "Same ObjectId casting risk - invalid id strings will 500 instead of 404."},
+      {"endpoint": "POST /api/pepper/checkin", "issue": "JSON parsing of LLM output uses bare 'except:' and silently falls back to a generic response. Sometimes the LLM wraps JSON in ```json fences which would also fail. Suggest stripping fences before json.loads and logging the parse error."},
+      {"endpoint": "POST /api/users", "issue": "Returns 200 instead of 201 on creation (minor REST style)."},
+      {"endpoint": "Backend env", "issue": "DB_NAME in backend/.env is 'test_database' - rename to 'saltcheck_db' (or env-specific) before production seeding."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_saltcheck_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Wrap ObjectId() calls in all CRUD endpoints with InvalidId handling so malformed IDs return 404 instead of 500.",
+    "Strip ```json fences and log parse failures in pepper_checkin instead of bare except.",
+    "Consider adding /api/health (or moving root to /api/) so the public ingress has a reachable health endpoint.",
+    "Tighten 'detect_crisis' (currently substring matches like 'suicide' inside 'suicide-prevention-hotline' would trigger crisis path). Consider word-boundary regex.",
+    "Add response_model_exclude={'_id'} or explicit projection - currently _id is excluded only because Pydantic Response model omits it; safe today but fragile."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 654 lines - approaching the 700-line guideline; consider splitting routers per resource.",
+    "Heavy DRY violation: every CRUD endpoint repeats the same create/update/get/delete boilerplate. Extract a generic Mongo CRUD helper.",
+    "user_id is taken as a query parameter with default 'default_user' - acceptable for MVP, but flag as auth debt.",
+    "POST endpoints return 200 instead of the more conventional 201.",
+    "Daily entry POST does not enforce uniqueness on (user_id, date) - duplicate entries for the same day are allowed.",
+    "EMERGENT_LLM_KEY is loaded but no startup check; if missing, PEPPER fails at request-time with 500. Validate at startup."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_saltcheck_backend.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not_tested"},
+  "seed_data_creation": "Tests create TEST_-prefixed users, daily entries, projects, tasks, money entries, body logs, person notes, and PEPPER check-ins under isolated user_ids (TEST_*_user). Projects/tasks/notes are cleaned up on teardown. Daily entries, money entries, body logs, PEPPER checkins, and users are left behind in MongoDB (no DELETE endpoint exposed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Public URL EXPO_PUBLIC_BACKEND_URL routes only /api/* through ingress. Use it via conftest. All 31 backend tests in /app/backend/tests/test_saltcheck_backend.py currently green. PEPPER LLM call uses GPT-4.1 via emergentintegrations - real API call costs tokens; tests average ~5s total. Crisis path is keyword-based (no LLM) and instant.",
+  "rca_of_issue": "No bugs reproduced. All requested features (1-10) verified working. Crisis detection verified by sending 'I want to die' which routes to the hard-coded safe response (no LLM call) and contains 'emergency'/'crisis' language and excludes the word 'park'."
+}
