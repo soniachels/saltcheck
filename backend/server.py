@@ -299,8 +299,18 @@ Format your response as JSON with these keys:
   "money_check": "One money-related insight or null",
   "body_check": "One body-related insight or null",
   "next_sane_step": "One immediate action",
-  "closer": "Optional spicy closer"
-}"""
+  "closer": "Optional spicy closer",
+  "bills": [{"label": "rent", "amount": 1200, "due_date": "2026-06-15", "recurring": "monthly"}],
+  "income": [{"label": "freelance invoice", "amount": 800, "expected_date": "2026-06-10", "recurring": null}]
+}
+
+Rules for "bills" and "income":
+- ONLY include if the user explicitly mentions a bill/payment/amount/incoming in their dump. Do not invent.
+- "amount" is a number (no currency symbol). If user did not say the amount, omit the entry.
+- "due_date" / "expected_date" is "YYYY-MM-DD" if user gave a date or you can confidently infer (e.g. "rent on the 15th" → next 15th). Omit otherwise.
+- "recurring" is one of "monthly" | "weekly" | "yearly" if recurrence is mentioned (e.g. "monthly rent", "weekly groceries"), else null.
+- Return EMPTY arrays if user mentioned no money items. Never put loops, body, or vague stuff here.
+"""
 
 PERSON_ADVICE_SYSTEM_PROMPT = """You are PEPPER, the salty, protective AI bestie. The user has shared notes about a specific person in their life and needs your read on the situation.
 
@@ -519,6 +529,75 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
             daily_entry_data["hygiene_checked"] = False
             daily_entry_data["created_at"] = datetime.utcnow()
             await daily_entries_collection.insert_one(daily_entry_data)
+        
+        # ---- Merge itemized bills + income into latest money entry ----
+        ai_bills = ai_response.get("bills") or []
+        ai_income = ai_response.get("income") or []
+        if isinstance(ai_bills, list) and isinstance(ai_income, list) and (ai_bills or ai_income):
+            # Find user's latest money entry; else create one
+            latest_money = await money_entries_collection.find_one(
+                {"user_id": user_id}, sort=[("created_at", -1)]
+            )
+
+            def _clean(items, kind):
+                cleaned = []
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    label = (it.get("label") or "").strip()
+                    amount = it.get("amount")
+                    if not label or amount is None:
+                        continue
+                    try:
+                        amount = float(amount)
+                    except Exception:
+                        continue
+                    entry = {"label": label, "amount": amount}
+                    date_key = "due_date" if kind == "bills" else "expected_date"
+                    if it.get(date_key):
+                        entry[date_key] = str(it[date_key])
+                    if it.get("recurring"):
+                        entry["recurring"] = it["recurring"]
+                    if kind == "bills":
+                        entry["paid"] = bool(it.get("paid", False))
+                    cleaned.append(entry)
+                return cleaned
+
+            new_bills = _clean(ai_bills, "bills")
+            new_income = _clean(ai_income, "income")
+
+            def _merge(existing, incoming):
+                # Dedupe by lowercased label — newer overrides older
+                merged = {(i.get("label") or "").lower(): i for i in (existing or [])}
+                for it in incoming:
+                    key = it["label"].lower()
+                    if key in merged:
+                        merged[key] = {**merged[key], **it}
+                    else:
+                        merged[key] = it
+                return list(merged.values())
+
+            if latest_money:
+                merged_bills = _merge(latest_money.get("bills"), new_bills)
+                merged_income = _merge(latest_money.get("income"), new_income)
+                await money_entries_collection.update_one(
+                    {"_id": latest_money["_id"]},
+                    {"$set": {
+                        "bills": merged_bills,
+                        "income": merged_income,
+                        "updated_at": datetime.utcnow(),
+                    }}
+                )
+            else:
+                await money_entries_collection.insert_one({
+                    "user_id": user_id,
+                    "date": today_str,
+                    "currency": "USD",
+                    "bills": new_bills,
+                    "income": new_income,
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                })
         
         return AICheckInResponse(**checkin_doc)
         

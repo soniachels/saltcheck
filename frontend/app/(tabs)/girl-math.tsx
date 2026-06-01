@@ -11,11 +11,33 @@ import { PepperBubble } from '../../src/components/PepperBubble';
 import { ChipPicker } from '../../src/components/ChipPicker';
 import { Button } from '../../src/components/Button';
 import { Input } from '../../src/components/Input';
+import { DatePicker } from '../../src/components/DatePicker';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { detectCurrency, formatMoney } from '../../src/utils/locale';
 
 const REGRET_LABELS = ['none', 'a lil', 'medium', 'big', 'huge'];
+
+// ISO week key for current week (YYYY-Wxx) — used to filter doom/soft to "this week"
+function isoWeekKey(d: Date) {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNum = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(weekNum).padStart(2, '0')}`;
+}
+
+function daysFromToday(iso: string): number | null {
+  if (!iso) return null;
+  try {
+    const [y, m, d] = iso.split('-').map(Number);
+    const target = new Date(y, m - 1, d);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return Math.floor((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  } catch { return null; }
+}
 
 export default function GirlMathScreen() {
   const { currentUserId } = useAppStore();
@@ -30,6 +52,12 @@ export default function GirlMathScreen() {
   const [doomForm, setDoomForm] = useState({ label: '', amount: '', regret: 2 });
   const [softModal, setSoftModal] = useState(false);
   const [softForm, setSoftForm] = useState({ label: '', amount: '' });
+
+  // Bill + Income modals
+  const [billModal, setBillModal] = useState<{ open: boolean; editingIdx: number | null }>({ open: false, editingIdx: null });
+  const [billForm, setBillForm] = useState({ label: '', amount: '', due_date: '', recurring: '' });
+  const [incomeModal, setIncomeModal] = useState<{ open: boolean; editingIdx: number | null }>({ open: false, editingIdx: null });
+  const [incomeForm, setIncomeForm] = useState({ label: '', amount: '', expected_date: '', recurring: '' });
 
   // Quick-edit modal for cash/bills/income
   const [editField, setEditField] = useState<'cash_available' | 'upcoming_bills' | 'expected_income' | null>(null);
@@ -50,25 +78,151 @@ export default function GirlMathScreen() {
   };
 
   const upsertField = async (patch: any) => {
-    const base = entry && entry.date === today ? entry : null;
-    const payload: any = { ...(base || {}), date: today, currency, ...patch };
-    delete payload.id; delete payload.user_id; delete payload.created_at; delete payload.updated_at;
-    if (base) {
-      const r = await apiClient.put(`/money-entries/${base.id}`, payload);
+    // Always operate on the latest entry — bills/income/doom/soft should persist
+    // across days, not get re-created daily.
+    if (entry) {
+      const payload: any = { ...entry, date: today, currency, ...patch };
+      delete payload.id; delete payload.user_id; delete payload.created_at; delete payload.updated_at;
+      const r = await apiClient.put(`/money-entries/${entry.id}`, payload);
       setEntry(r.data);
     } else {
+      const payload: any = { date: today, currency, ...patch };
       const r = await apiClient.post(`/money-entries?user_id=${currentUserId}`, payload);
       setEntry(r.data);
     }
   };
 
-  const floor = (entry?.cash_available || 0) - (entry?.upcoming_bills || 0);
-  const totalDoom = (entry?.doom_spends || []).reduce((s: number, d: any) => s + (d.amount || 0), 0);
-  const totalSoft = (entry?.soft_savings || []).reduce((s: number, d: any) => s + (d.amount || 0), 0);
+  const thisWeek = isoWeekKey(new Date());
+
+  // Filter doom/soft to current ISO week. Items without a date default to "this week".
+  const allDoom = (entry?.doom_spends || []) as any[];
+  const allSoft = (entry?.soft_savings || []) as any[];
+  const weeklyDoom = allDoom.filter((d) => !d.date || isoWeekKey(new Date(d.date)) === thisWeek);
+  const weeklySoft = allSoft.filter((s) => !s.date || isoWeekKey(new Date(s.date)) === thisWeek);
+
+  const totalDoom = weeklyDoom.reduce((s, d) => s + (d.amount || 0), 0);
+  const totalSoft = weeklySoft.reduce((s, d) => s + (d.amount || 0), 0);
+
+  // Itemized bills/income
+  const allBills = (entry?.bills || []) as any[];
+  const allIncome = (entry?.income || []) as any[];
+  const unpaidBills = allBills.filter((b) => !b.paid);
+  const paidBills = allBills.filter((b) => b.paid);
+  const billsTotal = unpaidBills.reduce((s, b) => s + (b.amount || 0), 0);
+  const incomeTotal = allIncome.reduce((s, b) => s + (b.amount || 0), 0);
+
+  // Floor = cash on hand − unpaid bills − this-week doom
+  const cash = entry?.cash_available || 0;
+  const lumpBills = entry?.upcoming_bills || 0; // fallback if no itemized
+  const effectiveBills = unpaidBills.length > 0 ? billsTotal : lumpBills;
+  const lumpIncome = entry?.expected_income || 0;
+  const effectiveIncome = allIncome.length > 0 ? incomeTotal : lumpIncome;
+  const floor = cash - effectiveBills;
   const floorAfterDoom = floor - totalDoom;
 
   // Show conversational intake if no entry yet
-  const showIntake = !entry || (entry.cash_available == null && entry.upcoming_bills == null && entry.expected_income == null);
+  const showIntake = !entry || (
+    entry.cash_available == null &&
+    !unpaidBills.length && !allIncome.length &&
+    entry.upcoming_bills == null && entry.expected_income == null
+  );
+
+  const saveEditField = async () => {
+    if (!editField) return;
+    const val = parseFloat(editValue);
+    await upsertField({ [editField]: isNaN(val) ? null : val });
+    setEditField(null);
+    setEditValue('');
+  };
+
+  const openBillEditor = (idx: number | null) => {
+    if (idx != null && allBills[idx]) {
+      const b = allBills[idx];
+      setBillForm({
+        label: b.label || '',
+        amount: b.amount != null ? String(b.amount) : '',
+        due_date: b.due_date || '',
+        recurring: b.recurring || '',
+      });
+    } else {
+      setBillForm({ label: '', amount: '', due_date: '', recurring: '' });
+    }
+    setBillModal({ open: true, editingIdx: idx });
+  };
+
+  const saveBill = async () => {
+    if (!billForm.label.trim() || !billForm.amount.trim()) {
+      Alert.alert('Hold up', 'Need a label and amount.');
+      return;
+    }
+    const newBill: any = {
+      label: billForm.label.trim(),
+      amount: parseFloat(billForm.amount) || 0,
+      paid: billModal.editingIdx != null ? !!allBills[billModal.editingIdx].paid : false,
+    };
+    if (billForm.due_date) newBill.due_date = billForm.due_date;
+    if (billForm.recurring) newBill.recurring = billForm.recurring;
+
+    const bills = [...allBills];
+    if (billModal.editingIdx != null) bills[billModal.editingIdx] = newBill;
+    else bills.push(newBill);
+
+    await upsertField({ bills });
+    setBillModal({ open: false, editingIdx: null });
+  };
+
+  const toggleBillPaid = async (idx: number) => {
+    const bills = [...allBills];
+    bills[idx] = { ...bills[idx], paid: !bills[idx].paid };
+    await upsertField({ bills });
+  };
+
+  const removeBill = async (idx: number) => {
+    const bills = allBills.filter((_, i) => i !== idx);
+    await upsertField({ bills });
+    setBillModal({ open: false, editingIdx: null });
+  };
+
+  const openIncomeEditor = (idx: number | null) => {
+    if (idx != null && allIncome[idx]) {
+      const it = allIncome[idx];
+      setIncomeForm({
+        label: it.label || '',
+        amount: it.amount != null ? String(it.amount) : '',
+        expected_date: it.expected_date || '',
+        recurring: it.recurring || '',
+      });
+    } else {
+      setIncomeForm({ label: '', amount: '', expected_date: '', recurring: '' });
+    }
+    setIncomeModal({ open: true, editingIdx: idx });
+  };
+
+  const saveIncome = async () => {
+    if (!incomeForm.label.trim() || !incomeForm.amount.trim()) {
+      Alert.alert('Hold up', 'Need a label and amount.');
+      return;
+    }
+    const newItem: any = {
+      label: incomeForm.label.trim(),
+      amount: parseFloat(incomeForm.amount) || 0,
+    };
+    if (incomeForm.expected_date) newItem.expected_date = incomeForm.expected_date;
+    if (incomeForm.recurring) newItem.recurring = incomeForm.recurring;
+
+    const income = [...allIncome];
+    if (incomeModal.editingIdx != null) income[incomeModal.editingIdx] = newItem;
+    else income.push(newItem);
+
+    await upsertField({ income });
+    setIncomeModal({ open: false, editingIdx: null });
+  };
+
+  const removeIncome = async (idx: number) => {
+    const income = allIncome.filter((_, i) => i !== idx);
+    await upsertField({ income });
+    setIncomeModal({ open: false, editingIdx: null });
+  };
 
   const saveDoom = async () => {
     if (!doomForm.label.trim() || !doomForm.amount.trim()) {
@@ -111,13 +265,7 @@ export default function GirlMathScreen() {
     await upsertField({ soft_savings: ss });
   };
 
-  const saveEditField = async () => {
-    if (!editField) return;
-    const val = parseFloat(editValue);
-    await upsertField({ [editField]: isNaN(val) ? null : val });
-    setEditField(null);
-    setEditValue('');
-  };
+  const saveDoom2 = async () => {};
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -190,14 +338,104 @@ export default function GirlMathScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.quickTile} onPress={() => { setEditField('expected_income'); setEditValue(entry?.expected_income?.toString() || ''); }}>
                 <Text style={styles.quickLabel}>INCOMING</Text>
-                <Text style={[styles.quickValue, { color: Colors.pickleLime }]}>{formatMoney(entry?.expected_income || 0, currency)}</Text>
+                <Text style={[styles.quickValue, { color: Colors.pickleLime }]}>{formatMoney(effectiveIncome, currency)}</Text>
               </TouchableOpacity>
             </View>
 
+            {/* Itemized Bills */}
+            <Text style={styles.sectionLabel}>BILLS.</Text>
+            <Text style={styles.sectionHint}>tap to edit. swipe past paid ones.</Text>
+            {unpaidBills.map((b, i) => {
+              const idx = allBills.indexOf(b);
+              const days = b.due_date ? daysFromToday(b.due_date) : null;
+              const overdue = days != null && days < 0;
+              const dueSoon = days != null && days >= 0 && days <= 3;
+              return (
+                <CategoryCard
+                  key={`bill-${idx}`}
+                  title={`${b.label}  ·  ${formatMoney(b.amount, currency)}`}
+                  subtitle={
+                    b.due_date
+                      ? overdue
+                        ? `OVERDUE · ${Math.abs(days!)}d ago`
+                        : days === 0
+                          ? 'due today'
+                          : `due in ${days}d${b.recurring ? ` · ${b.recurring}` : ''}`
+                      : b.recurring || 'no date'
+                  }
+                  icon="receipt"
+                  variant={overdue ? 'red' : dueSoon ? 'lilac' : 'dark'}
+                  onPress={() => openBillEditor(idx)}
+                  rightSlot={
+                    <TouchableOpacity onPress={() => toggleBillPaid(idx)} style={styles.paidBtn}>
+                      <Text style={styles.paidBtnText}>MARK PAID</Text>
+                    </TouchableOpacity>
+                  }
+                />
+              );
+            })}
+            <CategoryCard
+              title="+ ADD BILL"
+              subtitle={unpaidBills.length > 0 ? `${formatMoney(billsTotal, currency)} unpaid · ${unpaidBills.length} item${unpaidBills.length === 1 ? '' : 's'}` : 'rent, utilities, subscriptions...'}
+              icon="add-circle"
+              variant="red"
+              onPress={() => openBillEditor(null)}
+            />
+            {paidBills.length > 0 && (
+              <Text style={[styles.sectionHint, { marginTop: Spacing.xs }]}>
+                ✓ {paidBills.length} paid this period (tap to undo)
+              </Text>
+            )}
+            {paidBills.slice(0, 5).map((b) => {
+              const idx = allBills.indexOf(b);
+              return (
+                <TouchableOpacity
+                  key={`paid-${idx}`}
+                  style={styles.paidRow}
+                  onPress={() => toggleBillPaid(idx)}
+                >
+                  <Ionicons name="checkmark-circle" size={16} color={Colors.pickleLime} />
+                  <Text style={styles.paidRowText}>{b.label} · {formatMoney(b.amount, currency)}</Text>
+                </TouchableOpacity>
+              );
+            })}
+
+            {/* Itemized Income */}
+            <Text style={styles.sectionLabel}>INCOMING.</Text>
+            <Text style={styles.sectionHint}>money on its way. invoices, paychecks, refunds.</Text>
+            {allIncome.map((it, idx) => {
+              const days = it.expected_date ? daysFromToday(it.expected_date) : null;
+              return (
+                <CategoryCard
+                  key={`inc-${idx}`}
+                  title={`${it.label}  ·  ${formatMoney(it.amount, currency)}`}
+                  subtitle={
+                    it.expected_date
+                      ? days != null && days < 0
+                        ? `expected ${Math.abs(days)}d ago`
+                        : days === 0
+                          ? 'arriving today'
+                          : `in ${days}d${it.recurring ? ` · ${it.recurring}` : ''}`
+                      : it.recurring || 'no date'
+                  }
+                  icon="trending-up"
+                  variant="lime"
+                  onPress={() => openIncomeEditor(idx)}
+                />
+              );
+            })}
+            <CategoryCard
+              title="+ ADD INCOMING"
+              subtitle={allIncome.length > 0 ? `${formatMoney(incomeTotal, currency)} expected` : 'invoice, salary, refund...'}
+              icon="add-circle"
+              variant="lime"
+              onPress={() => openIncomeEditor(null)}
+            />
+
             {/* Doom Spending */}
             <Text style={styles.sectionLabel}>DOOM SPENDING.</Text>
-            <Text style={styles.sectionHint}>impulse buys & 3am amazon. log it. own it.</Text>
-            {(entry?.doom_spends || []).map((d: any, i: number) => (
+            <Text style={styles.sectionHint}>impulse buys & 3am amazon. this week only — auto-resets monday.</Text>
+            {weeklyDoom.map((d: any, i: number) => (
               <CategoryCard
                 key={i}
                 title={d.label}
@@ -205,18 +443,18 @@ export default function GirlMathScreen() {
                 icon="flame"
                 variant={d.regret >= 3 ? 'red' : 'dark'}
                 rightSlot={
-                  <TouchableOpacity onPress={() => removeDoom(i)}>
+                  <TouchableOpacity onPress={() => removeDoom(allDoom.indexOf(d))}>
                     <Ionicons name="close-circle" size={22} color={Colors.steelBlueGrey} />
                   </TouchableOpacity>
                 }
               />
             ))}
-            <CategoryCard title="+ LOG A DOOM SPEND" subtitle={totalDoom > 0 ? `${formatMoney(totalDoom, currency)} this period` : 'no shame. just data.'} icon="add-circle" variant="red" onPress={() => setDoomModal(true)} />
+            <CategoryCard title="+ LOG A DOOM SPEND" subtitle={totalDoom > 0 ? `${formatMoney(totalDoom, currency)} this week` : 'no shame. just data.'} icon="add-circle" variant="red" onPress={() => setDoomModal(true)} />
 
             {/* Soft Saving */}
             <Text style={styles.sectionLabel}>SOFT SAVING.</Text>
-            <Text style={styles.sectionHint}>small wins. spare change. didn't buy the latte.</Text>
-            {(entry?.soft_savings || []).map((s: any, i: number) => (
+            <Text style={styles.sectionHint}>small wins. spare change. this week only.</Text>
+            {weeklySoft.map((s: any, i: number) => (
               <CategoryCard
                 key={i}
                 title={s.label}
@@ -224,13 +462,13 @@ export default function GirlMathScreen() {
                 icon="leaf"
                 variant="dark"
                 rightSlot={
-                  <TouchableOpacity onPress={() => removeSoft(i)}>
+                  <TouchableOpacity onPress={() => removeSoft(allSoft.indexOf(s))}>
                     <Ionicons name="close-circle" size={22} color={Colors.steelBlueGrey} />
                   </TouchableOpacity>
                 }
               />
             ))}
-            <CategoryCard title="+ STASH A SMALL WIN" subtitle={totalSoft > 0 ? `${formatMoney(totalSoft, currency)} stashed` : 'every bit counts.'} icon="add-circle" variant="lime" onPress={() => setSoftModal(true)} />
+            <CategoryCard title="+ STASH A SMALL WIN" subtitle={totalSoft > 0 ? `${formatMoney(totalSoft, currency)} stashed this week` : 'every bit counts.'} icon="add-circle" variant="lime" onPress={() => setSoftModal(true)} />
 
             {/* PEPPER analysis */}
             <PepperBubble label="* PEPPER" variant={floorAfterDoom < 0 ? 'red' : 'lime'} style={{ marginTop: Spacing.lg }}>
@@ -314,6 +552,76 @@ export default function GirlMathScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Bill editor */}
+      <Modal visible={billModal.open} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <ScrollView contentContainerStyle={styles.editorScroll}>
+            <View style={styles.editorCard}>
+              <Text style={styles.editorTitle}>{billModal.editingIdx != null ? 'EDIT BILL' : 'NEW BILL'}</Text>
+              <Input label="LABEL" value={billForm.label} onChangeText={(t) => setBillForm({ ...billForm, label: t })} placeholder="rent, electricity, spotify..." autoFocus />
+              <Input label="AMOUNT" value={billForm.amount} onChangeText={(t) => setBillForm({ ...billForm, amount: t })} keyboardType="decimal-pad" placeholder="0.00" />
+              <DatePicker
+                label="DUE DATE"
+                value={billForm.due_date}
+                onChange={(v) => setBillForm({ ...billForm, due_date: v })}
+                placeholder="when's it due?"
+                variant="red"
+              />
+              <ChipPicker
+                label="RECURRING"
+                options={['one-time', 'weekly', 'monthly', 'yearly']}
+                value={billForm.recurring || 'one-time'}
+                onChange={(v) => setBillForm({ ...billForm, recurring: v === 'one-time' ? '' : v })}
+                variant="red"
+                testIDPrefix="recur"
+              />
+              <View style={styles.editorActions}>
+                <Button title="CANCEL" onPress={() => setBillModal({ open: false, editingIdx: null })} variant="ghost" />
+                <Button title="SAVE" onPress={saveBill} variant="primary" />
+              </View>
+              {billModal.editingIdx != null && (
+                <Button title="DELETE" onPress={() => removeBill(billModal.editingIdx!)} variant="danger" style={{ marginTop: Spacing.md }} />
+              )}
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* Income editor */}
+      <Modal visible={incomeModal.open} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <ScrollView contentContainerStyle={styles.editorScroll}>
+            <View style={styles.editorCard}>
+              <Text style={styles.editorTitle}>{incomeModal.editingIdx != null ? 'EDIT INCOMING' : 'NEW INCOMING'}</Text>
+              <Input label="LABEL" value={incomeForm.label} onChangeText={(t) => setIncomeForm({ ...incomeForm, label: t })} placeholder="paycheck, invoice, refund..." autoFocus />
+              <Input label="AMOUNT" value={incomeForm.amount} onChangeText={(t) => setIncomeForm({ ...incomeForm, amount: t })} keyboardType="decimal-pad" placeholder="0.00" />
+              <DatePicker
+                label="EXPECTED DATE"
+                value={incomeForm.expected_date}
+                onChange={(v) => setIncomeForm({ ...incomeForm, expected_date: v })}
+                placeholder="when's it landing?"
+                variant="lime"
+              />
+              <ChipPicker
+                label="RECURRING"
+                options={['one-time', 'weekly', 'monthly', 'yearly']}
+                value={incomeForm.recurring || 'one-time'}
+                onChange={(v) => setIncomeForm({ ...incomeForm, recurring: v === 'one-time' ? '' : v })}
+                variant="lime"
+                testIDPrefix="increc"
+              />
+              <View style={styles.editorActions}>
+                <Button title="CANCEL" onPress={() => setIncomeModal({ open: false, editingIdx: null })} variant="ghost" />
+                <Button title="SAVE" onPress={saveIncome} variant="primary" />
+              </View>
+              {incomeModal.editingIdx != null && (
+                <Button title="DELETE" onPress={() => removeIncome(incomeModal.editingIdx!)} variant="danger" style={{ marginTop: Spacing.md }} />
+              )}
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -361,4 +669,28 @@ const styles = StyleSheet.create({
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
   editorTitle: { fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 1, marginBottom: Spacing.lg },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
+  paidBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.pickleLime,
+  },
+  paidBtnText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.inkBlack,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  paidRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: 6,
+    paddingHorizontal: Spacing.sm,
+  },
+  paidRowText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.textSubtle,
+    textDecorationLine: 'line-through',
+  },
 });
