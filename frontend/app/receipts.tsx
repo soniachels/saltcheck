@@ -1,20 +1,54 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Modal, Alert, TouchableOpacity } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Modal,
+  Alert,
+  TouchableOpacity,
+  ActivityIndicator,
+} from 'react-native';
 import { Stack } from 'expo-router';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { Colors, Typography, Layout, Spacing, BorderRadius } from '../src/theme';
-import { Card } from '../src/components/Card';
+import { Ionicons } from '@expo/vector-icons';
+import {
+  Colors,
+  Typography,
+  Layout,
+  Spacing,
+  BorderRadius,
+} from '../src/theme';
+import { CategoryCard } from '../src/components/CategoryCard';
+import { PepperBubble } from '../src/components/PepperBubble';
 import { Button } from '../src/components/Button';
 import { Input } from '../src/components/Input';
-import { Ionicons } from '@expo/vector-icons';
 import apiClient from '../src/services/api';
 import { useAppStore } from '../src/store/appStore';
+
+type Verdict = 'trust' | 'caution' | 'cut';
+
+interface PersonAdvice {
+  vibe_read: string;
+  the_move: string;
+  watch_out_for: string[];
+  what_to_say?: string | null;
+  verdict: Verdict;
+}
+
+const VERDICT_MAP: Record<Verdict, { color: string; label: string }> = {
+  trust: { color: Colors.verdictTrust, label: 'TRUST' },
+  caution: { color: Colors.verdictCaution, label: 'CAUTION' },
+  cut: { color: Colors.verdictCut, label: 'CUT' },
+};
 
 export default function ReceiptsScreen() {
   const [receipts, setReceipts] = useState<any[]>([]);
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editingReceipt, setEditingReceipt] = useState<any>(null);
+  const [activeReceipt, setActiveReceipt] = useState<any>(null);
+  const [advice, setAdvice] = useState<PersonAdvice | null>(null);
+  const [adviceLoading, setAdviceLoading] = useState(false);
+  const [editorVisible, setEditorVisible] = useState(false);
   const [formData, setFormData] = useState({
     person_name: '',
     relationship_context: '',
@@ -24,7 +58,7 @@ export default function ReceiptsScreen() {
     follow_up_needed: '',
     risk_trust_notes: '',
   });
-  const { currentUserId, receiptsUnlocked, setReceiptsUnlocked } = useAppStore();
+  const { currentUserId, pepperSpiceLevel, receiptsUnlocked, setReceiptsUnlocked } = useAppStore();
 
   useEffect(() => {
     if (receiptsUnlocked) {
@@ -35,29 +69,29 @@ export default function ReceiptsScreen() {
 
   const authenticate = async () => {
     try {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-
+      const hasHardware = await LocalAuthentication.hasHardwareAsync().catch(() => false);
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync().catch(() => false);
       if (hasHardware && isEnrolled) {
         const result = await LocalAuthentication.authenticateAsync({
           promptMessage: 'Unlock Receipts',
           fallbackLabel: 'Use passcode',
         });
-
         if (result.success) {
           setIsUnlocked(true);
           setReceiptsUnlocked(true);
           loadReceipts();
         }
       } else {
-        // No biometrics available, allow access (MVP)
-        Alert.alert('Notice', 'Biometric security not available. Receipts will be accessible without authentication in this MVP version.');
+        // Web / no biometrics — open for MVP
         setIsUnlocked(true);
         setReceiptsUnlocked(true);
         loadReceipts();
       }
-    } catch (error) {
-      console.error('Auth error:', error);
+    } catch (e) {
+      // Last-resort fallback — let user in so they don't get stuck
+      setIsUnlocked(true);
+      setReceiptsUnlocked(true);
+      loadReceipts();
     }
   };
 
@@ -65,31 +99,51 @@ export default function ReceiptsScreen() {
     try {
       const response = await apiClient.get(`/person-notes/${currentUserId}`);
       setReceipts(response.data);
-    } catch (error) {
-      console.error('Failed to load receipts:', error);
+    } catch (e) {
+      console.error('Failed to load receipts:', e);
     }
   };
 
-  const saveReceipt = async () => {
+  const askPepper = async (receipt: any) => {
+    setActiveReceipt(receipt);
+    setAdvice(null);
+    setAdviceLoading(true);
     try {
-      const data = {
-        person_name: formData.person_name,
-        relationship_context: formData.relationship_context || null,
-        promised: formData.promised || null,
-        asked_for: formData.asked_for || null,
-        do_not_reveal: formData.do_not_reveal || null,
-        follow_up_needed: formData.follow_up_needed || null,
-        risk_trust_notes: formData.risk_trust_notes || null,
-        locked: true,
-      };
+      const res = await apiClient.post(
+        `/pepper/advise-person?user_id=${currentUserId}`,
+        {
+          person_note_id: receipt.id,
+          person_name: receipt.person_name,
+          relationship_context: receipt.relationship_context,
+          promised: receipt.promised,
+          asked_for: receipt.asked_for,
+          do_not_reveal: receipt.do_not_reveal,
+          follow_up_needed: receipt.follow_up_needed,
+          risk_trust_notes: receipt.risk_trust_notes,
+          spice_level: pepperSpiceLevel,
+        }
+      );
+      setAdvice(res.data);
+    } catch (e) {
+      Alert.alert('PEPPER is reading the room', 'Try again in a sec.');
+    } finally {
+      setAdviceLoading(false);
+    }
+  };
 
-      if (editingReceipt) {
-        await apiClient.put(`/person-notes/${editingReceipt.id}`, data);
-      } else {
-        await apiClient.post(`/person-notes?user_id=${currentUserId}`, data);
-      }
-      
-      setModalVisible(false);
+  const openEditor = (receipt?: any) => {
+    if (receipt) {
+      setFormData({
+        person_name: receipt.person_name,
+        relationship_context: receipt.relationship_context || '',
+        promised: receipt.promised || '',
+        asked_for: receipt.asked_for || '',
+        do_not_reveal: receipt.do_not_reveal || '',
+        follow_up_needed: receipt.follow_up_needed || '',
+        risk_trust_notes: receipt.risk_trust_notes || '',
+      });
+      setActiveReceipt(receipt);
+    } else {
       setFormData({
         person_name: '',
         relationship_context: '',
@@ -99,59 +153,67 @@ export default function ReceiptsScreen() {
         follow_up_needed: '',
         risk_trust_notes: '',
       });
-      setEditingReceipt(null);
+      setActiveReceipt(null);
+    }
+    setAdvice(null);
+    setEditorVisible(true);
+  };
+
+  const saveReceipt = async () => {
+    if (!formData.person_name.trim()) {
+      Alert.alert('Hold up', 'Give them a name first.');
+      return;
+    }
+    try {
+      const payload = { ...formData, locked: true };
+      if (activeReceipt) {
+        await apiClient.put(`/person-notes/${activeReceipt.id}`, payload);
+      } else {
+        await apiClient.post(`/person-notes?user_id=${currentUserId}`, payload);
+      }
+      setEditorVisible(false);
       loadReceipts();
-    } catch (error) {
-      console.error('Failed to save receipt:', error);
+    } catch (e) {
+      Alert.alert('Hiccup', 'Could not save. Try again.');
     }
   };
 
-  const deleteReceipt = async (id: string) => {
-    Alert.alert(
-      'Delete Receipt',
-      'This will permanently delete this receipt. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await apiClient.delete(`/person-notes/${id}`);
-              loadReceipts();
-            } catch (error) {
-              console.error('Failed to delete receipt:', error);
-            }
-          },
+  const deleteReceipt = (id: string) => {
+    Alert.alert('Delete this receipt?', 'Permanent. No undo.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await apiClient.delete(`/person-notes/${id}`);
+          setEditorVisible(false);
+          setActiveReceipt(null);
+          loadReceipts();
         },
-      ]
-    );
-  };
-
-  const openEditModal = (receipt: any) => {
-    setEditingReceipt(receipt);
-    setFormData({
-      person_name: receipt.person_name,
-      relationship_context: receipt.relationship_context || '',
-      promised: receipt.promised || '',
-      asked_for: receipt.asked_for || '',
-      do_not_reveal: receipt.do_not_reveal || '',
-      follow_up_needed: receipt.follow_up_needed || '',
-      risk_trust_notes: receipt.risk_trust_notes || '',
-    });
-    setModalVisible(true);
+      },
+    ]);
   };
 
   if (!isUnlocked) {
     return (
       <>
-        <Stack.Screen options={{ title: 'RECEIPTS', headerStyle: { backgroundColor: Colors.background }, headerTintColor: Colors.text }} />
+        <Stack.Screen
+          options={{
+            title: 'RECEIPTS',
+            headerStyle: { backgroundColor: Colors.background },
+            headerTintColor: Colors.text,
+          }}
+        />
         <View style={styles.lockedContainer}>
           <View style={styles.lockedContent}>
-            <Ionicons name="lock-closed" size={80} color={Colors.pepperRed} />
+            <View style={styles.lockBadge}>
+              <Ionicons name="lock-closed" size={48} color={Colors.brightRed} />
+            </View>
             <Text style={styles.lockedTitle}>RECEIPTS</Text>
-            <Text style={styles.lockedSubtitle}>Private people and power notes</Text>
-            <Text style={styles.lockedText}>Saved. Between us.</Text>
+            <Text style={styles.lockedSubtitle}>trust no one.</Text>
+            <Text style={styles.lockedText}>
+              Saved. Between us. PEPPER reads the room when you ask.
+            </Text>
             <Button title="UNLOCK" onPress={authenticate} variant="primary" style={styles.unlockButton} />
           </View>
         </View>
@@ -161,140 +223,212 @@ export default function ReceiptsScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: 'RECEIPTS', headerStyle: { backgroundColor: Colors.background }, headerTintColor: Colors.text }} />
+      <Stack.Screen
+        options={{
+          title: 'RECEIPTS',
+          headerStyle: { backgroundColor: Colors.background },
+          headerTintColor: Colors.text,
+        }}
+      />
       <View style={styles.container}>
         <ScrollView contentContainerStyle={styles.content}>
-          <View style={styles.header}>
-            <Text style={styles.subtitle}>Trust no one. Remember everything.</Text>
-          </View>
+          <Text style={styles.hero}>RECEIPTS</Text>
+          <Text style={styles.heroSub}>trust no one. remember everything.</Text>
 
-          {receipts.length > 0 ? (
-            receipts.map((receipt) => (
-              <TouchableOpacity key={receipt.id} onPress={() => openEditModal(receipt)}>
-                <Card variant="receipt">
-                  <View style={styles.receiptHeader}>
-                    <Text style={styles.personName}>{receipt.person_name}</Text>
-                    <Ionicons name="lock-closed" size={16} color={Colors.steelBlueGrey} />
-                  </View>
-                  {receipt.relationship_context && (
-                    <Text style={styles.context}>{receipt.relationship_context}</Text>
-                  )}
-                  {receipt.promised && (
-                    <View style={styles.receiptItem}>
-                      <Text style={styles.receiptLabel}>PROMISED:</Text>
-                      <Text style={styles.receiptText}>{receipt.promised}</Text>
-                    </View>
-                  )}
-                  {receipt.risk_trust_notes && (
-                    <View style={styles.receiptItem}>
-                      <Text style={styles.receiptLabel}>NOTES:</Text>
-                      <Text style={styles.receiptText}>{receipt.risk_trust_notes}</Text>
-                    </View>
-                  )}
-                </Card>
-              </TouchableOpacity>
-            ))
-          ) : (
+          {receipts.length === 0 ? (
             <View style={styles.empty}>
-              <Text style={styles.emptyText}>No receipts yet. Add one to remember.</Text>
+              <Text style={styles.emptyText}>No receipts yet.</Text>
+              <Text style={styles.emptySub}>Add someone PEPPER should keep an eye on.</Text>
             </View>
+          ) : (
+            receipts.map((receipt) => (
+              <CategoryCard
+                key={receipt.id}
+                title={receipt.person_name}
+                subtitle={receipt.relationship_context || 'no context'}
+                badge="R"
+                variant="dark"
+                onPress={() => askPepper(receipt)}
+                rightSlot={
+                  <Ionicons name="chevron-forward" size={20} color={Colors.steelBlueGrey} />
+                }
+              >
+                {receipt.risk_trust_notes && (
+                  <Text style={styles.cardNote} numberOfLines={2}>
+                    "{receipt.risk_trust_notes}"
+                  </Text>
+                )}
+              </CategoryCard>
+            ))
           )}
-
-          <Button
-            title="NEW RECEIPT"
-            onPress={() => {
-              setFormData({
-                person_name: '',
-                relationship_context: '',
-                promised: '',
-                asked_for: '',
-                do_not_reveal: '',
-                follow_up_needed: '',
-                risk_trust_notes: '',
-              });
-              setEditingReceipt(null);
-              setModalVisible(true);
-            }}
-            variant="primary"
-            style={styles.addButton}
-          />
         </ScrollView>
 
-        {/* Add/Edit Modal */}
-        <Modal visible={modalVisible} animationType="slide" transparent>
+        {/* FAB */}
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => openEditor()}
+          testID="receipts-add-fab"
+        >
+          <Ionicons name="add" size={28} color={Colors.saltBone} />
+        </TouchableOpacity>
+
+        {/* Advice Modal — Ask PEPPER about this person */}
+        <Modal
+          visible={!!activeReceipt && !editorVisible}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setActiveReceipt(null)}
+        >
           <View style={styles.modalOverlay}>
-            <ScrollView contentContainerStyle={styles.modalScroll}>
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>{editingReceipt ? 'EDIT RECEIPT' : 'NEW RECEIPT'}</Text>
-                
+            <View style={styles.sheet}>
+              <View style={styles.sheetHandle} />
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <View style={styles.sheetHeader}>
+                  <View>
+                    <Text style={styles.sheetTitle}>{activeReceipt?.person_name}</Text>
+                    {activeReceipt?.relationship_context && (
+                      <Text style={styles.sheetSub}>{activeReceipt.relationship_context}</Text>
+                    )}
+                  </View>
+                  <TouchableOpacity onPress={() => openEditor(activeReceipt)}>
+                    <Ionicons name="create" size={22} color={Colors.steelBlueGrey} />
+                  </TouchableOpacity>
+                </View>
+
+                {adviceLoading ? (
+                  <View style={styles.loadingBubble}>
+                    <ActivityIndicator color={Colors.brightRed} />
+                    <Text style={styles.loadingText}>PEPPER IS READING THE ROOM...</Text>
+                  </View>
+                ) : advice ? (
+                  <>
+                    {/* Verdict pill */}
+                    <View
+                      style={[
+                        styles.verdictPill,
+                        { backgroundColor: VERDICT_MAP[advice.verdict].color },
+                      ]}
+                    >
+                      <Text style={styles.verdictText}>{VERDICT_MAP[advice.verdict].label}</Text>
+                    </View>
+
+                    <PepperBubble label="* PEPPER" variant="red">
+                      {advice.vibe_read}
+                    </PepperBubble>
+
+                    <Text style={styles.sectionLabel}>THE MOVE</Text>
+                    <CategoryCard title={advice.the_move} variant="lime" />
+
+                    {advice.watch_out_for && advice.watch_out_for.length > 0 && (
+                      <>
+                        <Text style={styles.sectionLabel}>WATCH OUT FOR</Text>
+                        {advice.watch_out_for.map((item, i) => (
+                          <View key={i} style={styles.flagItem}>
+                            <Ionicons name="warning" size={16} color={Colors.brightRed} />
+                            <Text style={styles.flagText}>{item}</Text>
+                          </View>
+                        ))}
+                      </>
+                    )}
+
+                    {advice.what_to_say && (
+                      <>
+                        <Text style={styles.sectionLabel}>SAY THIS</Text>
+                        <PepperBubble variant="lilac">{advice.what_to_say}</PepperBubble>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <CategoryCard
+                    title="Ask PEPPER"
+                    subtitle="Read the vibe and get one clear move."
+                    variant="red"
+                    icon="flame"
+                    onPress={() => activeReceipt && askPepper(activeReceipt)}
+                  />
+                )}
+
+                <Button
+                  title="CLOSE"
+                  onPress={() => setActiveReceipt(null)}
+                  variant="ghost"
+                  style={styles.closeBtn}
+                />
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Editor Modal */}
+        <Modal visible={editorVisible} animationType="slide" transparent>
+          <View style={styles.modalOverlay}>
+            <ScrollView contentContainerStyle={styles.editorScroll}>
+              <View style={styles.editorContent}>
+                <Text style={styles.editorTitle}>
+                  {activeReceipt ? 'EDIT RECEIPT' : 'NEW RECEIPT'}
+                </Text>
+
                 <Input
                   label="PERSON NAME"
                   value={formData.person_name}
-                  onChangeText={(text) => setFormData({ ...formData, person_name: text })}
+                  onChangeText={(t) => setFormData({ ...formData, person_name: t })}
                   placeholder="Who is this about?"
                 />
-                
                 <Input
-                  label="RELATIONSHIP/CONTEXT"
+                  label="RELATIONSHIP"
                   value={formData.relationship_context}
-                  onChangeText={(text) => setFormData({ ...formData, relationship_context: text })}
-                  placeholder="Client, coworker, friend, etc."
+                  onChangeText={(t) => setFormData({ ...formData, relationship_context: t })}
+                  placeholder="ex, client, mom, friend..."
                 />
-                
                 <Input
                   label="WHAT THEY PROMISED"
                   value={formData.promised}
-                  onChangeText={(text) => setFormData({ ...formData, promised: text })}
+                  onChangeText={(t) => setFormData({ ...formData, promised: t })}
                   placeholder="What did they say they'd do?"
                   multiline
                 />
-                
                 <Input
-                  label="WHAT THEY ASKED FOR"
+                  label="WHAT THEY'RE ASKING FOR"
                   value={formData.asked_for}
-                  onChangeText={(text) => setFormData({ ...formData, asked_for: text })}
-                  placeholder="What do they want from you?"
+                  onChangeText={(t) => setFormData({ ...formData, asked_for: t })}
+                  placeholder="What do they want?"
                   multiline
                 />
-                
                 <Input
                   label="DO NOT REVEAL"
                   value={formData.do_not_reveal}
-                  onChangeText={(text) => setFormData({ ...formData, do_not_reveal: text })}
-                  placeholder="Don't over-explain to this one"
+                  onChangeText={(t) => setFormData({ ...formData, do_not_reveal: t })}
+                  placeholder="Don't over-explain to this one."
                   multiline
                 />
-                
                 <Input
                   label="FOLLOW UP NEEDED"
                   value={formData.follow_up_needed}
-                  onChangeText={(text) => setFormData({ ...formData, follow_up_needed: text })}
+                  onChangeText={(t) => setFormData({ ...formData, follow_up_needed: t })}
                   placeholder="What needs checking?"
                   multiline
                 />
-                
                 <Input
-                  label="RISK/TRUST NOTES"
+                  label="RISK / TRUST NOTES"
                   value={formData.risk_trust_notes}
-                  onChangeText={(text) => setFormData({ ...formData, risk_trust_notes: text })}
+                  onChangeText={(t) => setFormData({ ...formData, risk_trust_notes: t })}
                   placeholder="Red flags, green flags, vibes"
                   multiline
                 />
 
-                <View style={styles.modalButtons}>
-                  <Button title="CANCEL" onPress={() => setModalVisible(false)} variant="ghost" />
+                <View style={styles.editorActions}>
+                  <Button title="CANCEL" onPress={() => setEditorVisible(false)} variant="ghost" />
                   <Button title="SAVE" onPress={saveReceipt} variant="primary" />
-                  {editingReceipt && (
-                    <Button
-                      title="DELETE"
-                      onPress={() => {
-                        deleteReceipt(editingReceipt.id);
-                        setModalVisible(false);
-                      }}
-                      variant="danger"
-                    />
-                  )}
                 </View>
+
+                {activeReceipt && (
+                  <Button
+                    title="DELETE RECEIPT"
+                    onPress={() => deleteReceipt(activeReceipt.id)}
+                    variant="danger"
+                    style={{ marginTop: Spacing.md }}
+                  />
+                )}
               </View>
             </ScrollView>
           </View>
@@ -305,119 +439,94 @@ export default function ReceiptsScreen() {
 }
 
 const styles = StyleSheet.create({
-  lockedContainer: {
-    flex: 1,
-    backgroundColor: Colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Layout.screenPadding,
-  },
-  lockedContent: {
-    alignItems: 'center',
-  },
-  lockedTitle: {
-    fontSize: Typography.fontSize.hero,
-    fontWeight: 'bold',
+  container: { flex: 1, backgroundColor: Colors.background },
+  content: { padding: Layout.screenPadding, paddingBottom: 120 },
+  hero: {
+    fontSize: Typography.fontSize.display,
+    fontWeight: '900',
     color: Colors.text,
-    marginTop: Spacing.lg,
     letterSpacing: 2,
-  },
-  lockedSubtitle: {
-    fontSize: Typography.fontSize.lg,
-    color: Colors.steelBlueGrey,
     marginTop: Spacing.sm,
-    textAlign: 'center',
   },
-  lockedText: {
+  heroSub: {
     fontSize: Typography.fontSize.base,
-    color: Colors.steelBlueGrey,
-    marginTop: Spacing.md,
+    color: Colors.textSubtle,
     marginBottom: Spacing.xl,
-    textAlign: 'center',
+    fontStyle: 'italic',
   },
-  unlockButton: {
-    minWidth: 200,
+  cardNote: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.textSubtle,
+    fontStyle: 'italic',
   },
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
+  empty: { paddingVertical: Spacing.xxl, alignItems: 'center' },
+  emptyText: { fontSize: Typography.fontSize.lg, color: Colors.text, fontWeight: '700' },
+  emptySub: { fontSize: Typography.fontSize.sm, color: Colors.textSubtle, marginTop: Spacing.xs },
+  fab: {
+    position: 'absolute',
+    bottom: 32,
+    right: 24,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: Colors.brightRed,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 8,
+    elevation: 6,
   },
-  content: {
-    padding: Layout.screenPadding,
-    paddingBottom: 100,
-  },
-  header: {
+  // Locked screen
+  lockedContainer: { flex: 1, backgroundColor: Colors.background, alignItems: 'center', justifyContent: 'center', padding: Layout.screenPadding },
+  lockedContent: { alignItems: 'center' },
+  lockBadge: {
+    width: 96,
+    height: 96,
+    borderRadius: 24,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: Spacing.lg,
   },
-  subtitle: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.steelBlueGrey,
+  lockedTitle: { fontSize: Typography.fontSize.hero, fontWeight: '900', color: Colors.text, letterSpacing: 3 },
+  lockedSubtitle: { fontSize: Typography.fontSize.lg, color: Colors.brightRed, marginTop: Spacing.sm, fontStyle: 'italic' },
+  lockedText: { fontSize: Typography.fontSize.base, color: Colors.textSubtle, marginTop: Spacing.md, marginBottom: Spacing.xl, textAlign: 'center', maxWidth: 280 },
+  unlockButton: { minWidth: 220 },
+  // Sheet
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: Colors.charcoal,
+    borderTopLeftRadius: BorderRadius.xxl,
+    borderTopRightRadius: BorderRadius.xxl,
+    padding: Layout.screenPadding,
+    paddingTop: 12,
+    maxHeight: '90%',
   },
-  receiptHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.sm,
-  },
-  personName: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: '600',
-    color: Colors.text,
-  },
-  context: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.steelBlueGrey,
+  sheetHandle: { width: 40, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: 'center', marginBottom: Spacing.md },
+  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: Spacing.lg },
+  sheetTitle: { fontSize: Typography.fontSize.xxl, fontWeight: '900', color: Colors.text, letterSpacing: 1 },
+  sheetSub: { fontSize: Typography.fontSize.sm, color: Colors.textSubtle, marginTop: 2 },
+  verdictPill: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
     marginBottom: Spacing.md,
   },
-  receiptItem: {
-    marginBottom: Spacing.sm,
-  },
-  receiptLabel: {
-    fontSize: Typography.fontSize.xs,
-    color: Colors.steelBlueGrey,
-    marginBottom: 2,
-  },
-  receiptText: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.text,
-  },
-  empty: {
-    paddingVertical: Spacing.xxl,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.steelBlueGrey,
-    textAlign: 'center',
-  },
-  addButton: {
-    marginTop: Spacing.lg,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
-  },
-  modalScroll: {
-    padding: Layout.screenPadding,
-    paddingTop: 60,
-  },
-  modalContent: {
-    width: '100%',
-    backgroundColor: Colors.charcoal,
-    borderRadius: BorderRadius.lg,
-    padding: Layout.cardPadding,
-  },
-  modalTitle: {
-    fontSize: Typography.fontSize.xl,
-    fontWeight: 'bold',
-    color: Colors.text,
-    marginBottom: Spacing.lg,
-    letterSpacing: 1,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: Spacing.lg,
-    gap: Spacing.sm,
-  },
+  verdictText: { fontSize: Typography.fontSize.xs, fontWeight: '900', color: Colors.inkBlack, letterSpacing: 2 },
+  sectionLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 2, marginTop: Spacing.lg, marginBottom: Spacing.sm },
+  flagItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.charcoalRaised, padding: Spacing.md, borderRadius: BorderRadius.md, marginBottom: Spacing.xs },
+  flagText: { fontSize: Typography.fontSize.base, color: Colors.text, marginLeft: Spacing.sm, fontWeight: '600' },
+  loadingBubble: { padding: Spacing.xl, alignItems: 'center', backgroundColor: Colors.charcoalRaised, borderRadius: BorderRadius.xl, marginBottom: Spacing.lg },
+  loadingText: { color: Colors.brightRed, fontSize: Typography.fontSize.sm, fontWeight: '700', letterSpacing: 2, marginTop: Spacing.sm },
+  closeBtn: { marginTop: Spacing.xl, marginBottom: Spacing.lg },
+  // Editor
+  editorScroll: { padding: Layout.screenPadding, paddingTop: 60 },
+  editorContent: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
+  editorTitle: { fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 1, marginBottom: Spacing.lg },
+  editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
 });

@@ -176,6 +176,13 @@ class BodyLogCreate(BaseModel):
     water: Optional[int] = None
     weight_optional: Optional[float] = None
     notes: Optional[str] = None
+    # Extended care fields
+    period_started_on: Optional[str] = None  # date string
+    period_length_days: Optional[int] = None
+    cycle_length_days: Optional[int] = None
+    medications: Optional[List[str]] = None  # e.g. ["Ozempic 0.5mg weekly", "Vitamin D"]
+    appointments: Optional[List[dict]] = None  # [{"label": "GP", "date": "2026-07-01"}]
+    mood: Optional[str] = None
 
 class BodyLogResponse(BaseModel):
     id: str
@@ -190,6 +197,12 @@ class BodyLogResponse(BaseModel):
     water: Optional[int]
     weight_optional: Optional[float]
     notes: Optional[str]
+    period_started_on: Optional[str] = None
+    period_length_days: Optional[int] = None
+    cycle_length_days: Optional[int] = None
+    medications: Optional[List[str]] = None
+    appointments: Optional[List[dict]] = None
+    mood: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -271,6 +284,43 @@ Format your response as JSON with these keys:
   "body_check": "One body-related insight or null",
   "next_sane_step": "One immediate action",
   "closer": "Optional spicy closer"
+}"""
+
+PERSON_ADVICE_SYSTEM_PROMPT = """You are PEPPER, the salty, protective AI bestie. The user has shared notes about a specific person in their life and needs your read on the situation.
+
+Be direct. Be a little mean for protective reasons. Use brand voice: food/salt/pepper/flavor metaphors, "girl please," "be so for real" — sparingly, when it fits. Never melodramatic. Never therapist. Never corporate.
+
+Your job:
+1. Read the vibe (1 line, blunt)
+2. Protect the user's energy and time
+3. Give them a clear move (text, ignore, set boundary, follow up, cut losses)
+4. Flag risk if you see it (love-bombing, taking advantage, gaslighting patterns — call it out without diagnosing)
+
+Output JSON only:
+{
+  "vibe_read": "One blunt line on what this person is doing",
+  "the_move": "ONE clear action to take (e.g. 'Send the boundary text. Stop drafting paragraphs.')",
+  "watch_out_for": ["Pattern 1", "Pattern 2"],
+  "what_to_say": "If a reply/text is appropriate, the actual short text to send. Otherwise null.",
+  "verdict": "trust | caution | cut" 
+}"""
+
+BODY_ADVICE_SYSTEM_PROMPT = """You are PEPPER, the salty, protective AI bestie helping the user care for their body. They've shared body/health notes (cycle, meds, sleep, symptoms, appointments) and want your read.
+
+Be direct. Use brand voice but DIAL DOWN the sass when health is involved. Be a protective best friend, not a doctor. Never give medical diagnoses or prescription advice. Always recommend a doctor for serious symptoms.
+
+Your job:
+1. Read the patterns (1 line)
+2. Care moves (3 tiny next steps — water, snack, doc check, set reminder, etc.)
+3. Flag anything that needs a doctor
+4. End with permission to rest if needed
+
+Output JSON only:
+{
+  "vibe_read": "One line on what's going on with their body",
+  "care_moves": ["Move 1", "Move 2", "Move 3"],
+  "doctor_flag": "Anything that warrants a doctor visit, or null",
+  "permission": "A short warm line giving them permission to rest/eat/skip/cancel something"
 }"""
 
 # Crisis keywords for safety
@@ -706,9 +756,6 @@ async def delete_person_note(note_id: str):
         raise HTTPException(status_code=404, detail="Note not found")
     return {"message": "Receipt deleted"}
 
-# ============================================================
-# Voice Transcription (Whisper) endpoint
-# ============================================================
 @app.post("/api/pepper/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     """Accept an audio file (m4a/mp3/wav/webm) and return Whisper transcription."""
@@ -819,6 +866,165 @@ async def send_test_push(body: TestPushBody):
         return {"status": "sent"}
     except Exception as e:
         return {"status": "failed", "reason": str(e)}
+
+
+# ============================================================
+# PEPPER Advice — People (Receipts) and Body
+# ============================================================
+class PersonAdviceRequest(BaseModel):
+    person_note_id: Optional[str] = None
+    person_name: str
+    relationship_context: Optional[str] = None
+    promised: Optional[str] = None
+    asked_for: Optional[str] = None
+    do_not_reveal: Optional[str] = None
+    follow_up_needed: Optional[str] = None
+    risk_trust_notes: Optional[str] = None
+    spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
+
+
+@app.post("/api/pepper/advise-person")
+async def advise_person(req: PersonAdviceRequest, user_id: str = "default_user"):
+    """PEPPER reads the person notes and tells the user what to do."""
+    try:
+        spice_modifier = {
+            "mild": "Tone down sass. Warm and direct.",
+            "medium": "Brand voice as defined.",
+            "extra_spicy": "Max protective energy. More 'be so for real'. Never cruel.",
+        }.get(req.spice_level, "")
+        
+        context_lines = [
+            f"Person: {req.person_name}",
+            f"Relationship: {req.relationship_context or 'not specified'}",
+        ]
+        if req.promised: context_lines.append(f"What they promised: {req.promised}")
+        if req.asked_for: context_lines.append(f"What they're asking for: {req.asked_for}")
+        if req.do_not_reveal: context_lines.append(f"Do not reveal to them: {req.do_not_reveal}")
+        if req.follow_up_needed: context_lines.append(f"Follow up needed: {req.follow_up_needed}")
+        if req.risk_trust_notes: context_lines.append(f"Risk/trust notes: {req.risk_trust_notes}")
+        
+        user_prompt = (
+            "Read these notes and give your read on this person. JSON only.\n\n"
+            + "\n".join(context_lines)
+        )
+        
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"advise_person_{user_id}_{datetime.utcnow().timestamp()}",
+            system_message=f"{PERSON_ADVICE_SYSTEM_PROMPT}\n\n{spice_modifier}"
+        ).with_model("openai", "gpt-4.1")
+        
+        response = await chat.send_message(UserMessage(text=user_prompt))
+        
+        import json
+        try:
+            advice = json.loads(response)
+        except Exception:
+            # Strip code fences if present
+            cleaned = response.strip().lstrip("`").rstrip("`")
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+            try:
+                advice = json.loads(cleaned)
+            except Exception:
+                advice = {
+                    "vibe_read": "Couldn't parse — try again.",
+                    "the_move": "Re-open and ask PEPPER once more.",
+                    "watch_out_for": [],
+                    "what_to_say": None,
+                    "verdict": "caution",
+                }
+        
+        return advice
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PEPPER is reading the room: {str(e)}")
+
+
+class BodyAdviceRequest(BaseModel):
+    sleep: Optional[str] = None
+    appetite: Optional[str] = None
+    symptoms: Optional[str] = None
+    mood: Optional[str] = None
+    water: Optional[int] = None
+    period_started_on: Optional[str] = None
+    period_length_days: Optional[int] = None
+    cycle_length_days: Optional[int] = None
+    medications: Optional[List[str]] = None
+    appointments: Optional[List[dict]] = None
+    notes: Optional[str] = None
+    spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
+
+
+@app.post("/api/pepper/advise-body")
+async def advise_body(req: BodyAdviceRequest, user_id: str = "default_user"):
+    """PEPPER reads body care notes and gives gentle, practical care moves."""
+    try:
+        spice_modifier = {
+            "mild": "Extra gentle. Health context — protective best friend mode.",
+            "medium": "Brand voice but dial down sass for health topics.",
+            "extra_spicy": "Still warm because this is body stuff. No cruel jokes.",
+        }.get(req.spice_level, "")
+        
+        context_lines = []
+        if req.sleep: context_lines.append(f"Sleep: {req.sleep}")
+        if req.appetite: context_lines.append(f"Appetite: {req.appetite}")
+        if req.water is not None: context_lines.append(f"Water today: {req.water} glasses")
+        if req.symptoms: context_lines.append(f"Symptoms: {req.symptoms}")
+        if req.mood: context_lines.append(f"Mood: {req.mood}")
+        if req.period_started_on:
+            context_lines.append(f"Last period started: {req.period_started_on}")
+            if req.cycle_length_days:
+                context_lines.append(f"Typical cycle: {req.cycle_length_days} days")
+            if req.period_length_days:
+                context_lines.append(f"Period length: {req.period_length_days} days")
+        if req.medications:
+            context_lines.append(f"Medications/jabs: {', '.join(req.medications)}")
+        if req.appointments:
+            appts = ", ".join([f"{a.get('label','appt')} on {a.get('date','TBD')}" for a in req.appointments])
+            context_lines.append(f"Upcoming appointments: {appts}")
+        if req.notes: context_lines.append(f"Other notes: {req.notes}")
+        
+        if not context_lines:
+            return {
+                "vibe_read": "Not much logged yet. Hard to read the body without data.",
+                "care_moves": ["Log one thing — sleep, water, or how you feel."],
+                "doctor_flag": None,
+                "permission": "Start small. One log is enough.",
+            }
+        
+        user_prompt = (
+            "Read these body notes and give care moves. JSON only.\n\n"
+            + "\n".join(context_lines)
+        )
+        
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"advise_body_{user_id}_{datetime.utcnow().timestamp()}",
+            system_message=f"{BODY_ADVICE_SYSTEM_PROMPT}\n\n{spice_modifier}"
+        ).with_model("openai", "gpt-4.1")
+        
+        response = await chat.send_message(UserMessage(text=user_prompt))
+        
+        import json
+        try:
+            advice = json.loads(response)
+        except Exception:
+            cleaned = response.strip().lstrip("`").rstrip("`")
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+            try:
+                advice = json.loads(cleaned)
+            except Exception:
+                advice = {
+                    "vibe_read": "Couldn't parse — try again.",
+                    "care_moves": ["Drink water.", "Log one symptom.", "Check in with yourself."],
+                    "doctor_flag": None,
+                    "permission": "Rest if you need to. The list will wait.",
+                }
+        
+        return advice
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PEPPER is checking on you: {str(e)}")
 
 
 if __name__ == "__main__":

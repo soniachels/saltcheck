@@ -1,0 +1,59 @@
+{
+  "summary": "Iteration 3 — backend-only. 57/57 pytest cases PASSED (100%). New features under test: (1) POST /api/pepper/advise-person — verified 5 scenarios: minimum payload (only person_name), full payload medium, extra_spicy tone, mild tone, and 422 on missing person_name. All responses contain the 5 required keys {vibe_read, the_move, watch_out_for, what_to_say, verdict}, watch_out_for is always a list, what_to_say is null|string, verdict is always one of trust|caution|cut. (2) POST /api/pepper/advise-body — verified 3 scenarios: empty body returns the hard-coded helpful placeholder with all 4 keys and 'log something' messaging (no LLM call), multi-field reasoning (cycle + meds + symptoms + appointments + mood + sleep + water + notes), and extra_spicy health tone is still gentle (no cruel phrases like 'girl please', 'be so for real', 'we are not doing this'). care_moves is always a non-empty list, doctor_flag is null|string. (3) BodyLog model extension — POST creates with new fields (period_started_on, period_length_days, cycle_length_days, medications[str], appointments[{label,date}], mood), GET list includes them, PUT updates them, and backwards-compat payloads without the new fields still return 200 with the new fields defaulting to null. (4) Regression — all 31 original endpoints (users/daily-entries/projects/tasks/money-entries/body-logs/person-notes/pepper-checkin/pepper-history) and the 13 prior iteration-2 tests (spice levels, nickname, crisis, auto-sync, transcribe, register-push graceful skip, send-test-push) still pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/pepper/advise-person and /api/pepper/advise-body",
+        "issue": "If the LLM returns malformed JSON, both endpoints fall back to a hard-coded 'Couldn't parse — try again.' dict. No telemetry/log emitted, so silent quality issues are invisible. Consider logging the raw response on parse failure for QA visibility. Reference: /app/backend/server.py:921-936, 1009-1023."
+      },
+      {
+        "endpoint": "POST /api/pepper/advise-person",
+        "issue": "person_note_id is accepted in the request body but never read or persisted — the endpoint reconstructs context from the body fields directly. Dead field. Either drop it from PersonAdviceRequest or hydrate the note from Mongo when present. Reference: /app/backend/server.py:875."
+      },
+      {
+        "endpoint": "POST /api/pepper/advise-body",
+        "issue": "When the body is empty the hard-coded fallback is returned with HTTP 200, but the LLM is never called. If the user *just* set spice_level with no other field, they get the same canned response. Minor UX consideration. Reference: /app/backend/server.py:987-993."
+      },
+      {
+        "endpoint": "Carry-over from iteration 1",
+        "issue": "ObjectId(invalid_string) still raises bson.errors.InvalidId -> HTTP 500 instead of 404/400 on PUT/DELETE/GET-by-id endpoints. Not blocking."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_saltcheck_backend.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/test_pepper_advice_and_body.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/pytest_iter3_new.xml"
+  ],
+  "action_items": [
+    "Optional: drop unused 'person_note_id' field from PersonAdviceRequest or hydrate the note from Mongo when provided.",
+    "Optional: log the raw LLM response when JSON parsing fails in advise-person/advise-body for QA visibility.",
+    "Carry-over: wrap ObjectId() casts to return 404 on malformed ids."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1032 lines — well over the 700-line guideline. Time to split into routers (pepper.py, push.py, body.py, crud.py).",
+    "PERSON_ADVICE_SYSTEM_PROMPT and BODY_ADVICE_SYSTEM_PROMPT both instruct 'JSON only' but the parsing fallback handles ```json fences anyway — good defensive coding.",
+    "Body advice empty-payload short-circuit (server.py:987) is good — avoids an unnecessary LLM call when there's nothing to reason about.",
+    "BodyLogResponse correctly declares the new fields as Optional with =None default, so legacy documents without these keys still deserialize cleanly.",
+    "The spice_modifier strings for advise-body explicitly de-escalate sass for health context ('Still warm because this is body stuff. No cruel jokes.'); confirmed in tests that even extra_spicy stays gentle."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pepper_advice_and_body.py (new — 13 tests)"
+  ],
+  "success_rate": {"backend": "100% (57/57)", "frontend": "not_tested"},
+  "seed_data_creation": "Test data prefixed TEST_advise_person, TEST_advise_body, TEST_body_ext_user, TEST_body_ext_user_old, TEST_u. body_logs collection accumulates a few new docs (no DELETE endpoint exists for body-logs).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL EXPO_PUBLIC_BACKEND_URL via /app/frontend/.env routes only /api/*. All 57 backend tests pass. New tests live in tests/test_pepper_advice_and_body.py. advise-person and advise-body call gpt-4.1 via emergentintegrations.LlmChat — each test takes ~1-2s. Empty-body advise-body skips the LLM and returns a hard-coded helpful response. BodyLog model now supports period_started_on, period_length_days, cycle_length_days, medications[str], appointments[{label,date}], mood — all round-trip cleanly through POST/GET/PUT.",
+  "rca_of_issue": "No bugs found in iteration 3. The previously-flagged register-push graceful-skip bug from iteration 2 is now confirmed FIXED (test_register_push_does_not_crash and test_register_push_graceful both pass)."
+}

@@ -35,15 +35,15 @@ export default function MoreScreen() {
       </View>
 
       <MenuItem
-        title="Body Notes"
-        subtitle="Track sleep, symptoms, and body stuff"
-        icon="fitness"
+        title="Body"
+        subtitle="Cycle, meds, appointments — PEPPER checks in"
+        icon="heart"
         onPress={() => router.push('/body-notes')}
       />
 
       <MenuItem
         title="Receipts"
-        subtitle="Private people and power notes"
+        subtitle="People notes — PEPPER reads the room"
         icon="lock-closed"
         onPress={() => router.push('/receipts')}
       />
