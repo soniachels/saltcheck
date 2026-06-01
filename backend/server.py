@@ -80,6 +80,7 @@ class UserResponse(BaseModel):
 class DailyEntryCreate(BaseModel):
     date: str  # YYYY-MM-DD format
     top_priorities: List[str] = []
+    priorities_done: List[bool] = []
     water_checked: bool = False
     food_checked: bool = False
     hygiene_checked: bool = False
@@ -94,6 +95,7 @@ class DailyEntryResponse(BaseModel):
     user_id: str
     date: str
     top_priorities: List[str]
+    priorities_done: List[bool] = []
     water_checked: bool
     food_checked: bool
     hygiene_checked: bool
@@ -484,6 +486,7 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
             "user_id": user_id,
             "date": today_str,
             "top_priorities": salt_check_items[:3],
+            "priorities_done": [False] * len(salt_check_items[:3]),
             "next_sane_step": next_sane_step,
             "money_action": money_action,
             "work_action": work_action,
@@ -494,7 +497,18 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
         
         existing_entry = await daily_entries_collection.find_one({"user_id": user_id, "date": today_str})
         if existing_entry:
-            # Preserve checkbox state on update
+            # Preserve checkbox state and priorities_done on update
+            preserved_done = existing_entry.get("priorities_done", [])
+            new_priorities = salt_check_items[:3]
+            # Re-align done flags with new priorities. If list grew/shrank, pad/truncate.
+            aligned = []
+            for i in range(len(new_priorities)):
+                # If same item was previously done at same index, preserve. Otherwise default false.
+                if i < len(preserved_done):
+                    aligned.append(preserved_done[i])
+                else:
+                    aligned.append(False)
+            daily_entry_data["priorities_done"] = aligned
             await daily_entries_collection.update_one(
                 {"_id": existing_entry["_id"]},
                 {"$set": daily_entry_data}

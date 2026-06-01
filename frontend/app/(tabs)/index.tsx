@@ -20,6 +20,12 @@ import { DatePicker } from '../../src/components/DatePicker';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
+import {
+  priorityReaction,
+  loopDoneReaction,
+  loopOverdueNudge,
+  loopDueTodayNudge,
+} from '../../src/utils/pepperReactions';
 
 export default function TodayScreen() {
   const { currentUserId, nickname } = useAppStore();
@@ -28,11 +34,20 @@ export default function TodayScreen() {
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
   const [taskForm, setTaskForm] = useState({ title: '', next_action: '', deadline: '' });
+  const [pepperReaction, setPepperReaction] = useState<string | null>(null);
+  const [overdueNudgeSeed] = useState(() => Math.floor(Math.random() * 100));
 
   const today = new Date().toISOString().split('T')[0];
   const todayDate = new Date();
   const dayName = todayDate.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
   const monthDay = todayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  // Auto-clear the floating PEPPER reaction
+  useEffect(() => {
+    if (!pepperReaction) return;
+    const t = setTimeout(() => setPepperReaction(null), 4500);
+    return () => clearTimeout(t);
+  }, [pepperReaction]);
 
   const loadAll = async () => {
     try {
@@ -48,6 +63,7 @@ export default function TodayScreen() {
   };
 
   useFocusEffect(useCallback(() => { loadAll(); }, []));
+  useEffect(() => { loadAll(); }, []);
 
   const toggleCheck = async (field: string, current: boolean) => {
     if (!todayEntry) {
@@ -103,12 +119,74 @@ export default function TodayScreen() {
   const cycleStatus = async (task: any) => {
     const order = ['not_started', 'in_progress', 'waiting', 'done'];
     const next = order[(order.indexOf(task.status) + 1) % order.length];
+    const wasDone = task.status === 'done';
+    const nowDone = next === 'done';
     const payload = { ...task, status: next };
     delete payload.id;
     delete payload.user_id;
     delete payload.created_at;
     delete payload.updated_at;
     await apiClient.put(`/tasks/${task.id}`, payload);
+    if (!wasDone && nowDone) {
+      setPepperReaction(loopDoneReaction());
+    }
+    loadAll();
+  };
+
+  const togglePriorityDone = async (i: number) => {
+    if (!todayEntry) return;
+    const priorities = todayEntry.top_priorities || [];
+    const current: boolean[] = (todayEntry.priorities_done || []).slice();
+    while (current.length < priorities.length) current.push(false);
+    const wasDone = !!current[i];
+    current[i] = !wasDone;
+
+    // Optimistic update
+    setTodayEntry({ ...todayEntry, priorities_done: current });
+
+    const totalDone = current.filter(Boolean).length;
+    const reaction = priorityReaction({
+      newlyDone: !wasDone,
+      totalDone,
+      totalPriorities: priorities.length,
+    });
+    setPepperReaction(reaction);
+
+    const updated = { ...todayEntry, priorities_done: current };
+    delete (updated as any).id;
+    delete (updated as any).user_id;
+    delete (updated as any).created_at;
+    delete (updated as any).updated_at;
+    try {
+      const r = await apiClient.put(`/daily-entries/${todayEntry.id}`, updated);
+      setTodayEntry(r.data);
+    } catch (e) {
+      // Revert on failure
+      const reverted = current.slice();
+      reverted[i] = wasDone;
+      setTodayEntry({ ...todayEntry, priorities_done: reverted });
+    }
+  };
+
+  const markLoopDone = async (task: any) => {
+    const payload = { ...task, status: 'done' };
+    delete payload.id;
+    delete payload.user_id;
+    delete payload.created_at;
+    delete payload.updated_at;
+    await apiClient.put(`/tasks/${task.id}`, payload);
+    setPepperReaction(loopDoneReaction());
+    loadAll();
+  };
+
+  const reopenLoop = async (task: any) => {
+    const payload = { ...task, status: 'in_progress' };
+    delete payload.id;
+    delete payload.user_id;
+    delete payload.created_at;
+    delete payload.updated_at;
+    await apiClient.put(`/tasks/${task.id}`, payload);
+    setPepperReaction("ok. moved it back to in-progress. set a real date this time.");
     loadAll();
   };
 
@@ -121,6 +199,22 @@ export default function TodayScreen() {
   const activeTasks = tasks.filter((t) => !t.parked && t.status !== 'done');
   const doneTasks = tasks.filter((t) => t.status === 'done');
   const parkedTasks = tasks.filter((t) => t.parked);
+
+  // Deadline-aware bucketing
+  const overdueTasks = activeTasks.filter(
+    (t) => t.deadline && t.deadline < today
+  );
+  const dueTodayTasks = activeTasks.filter((t) => t.deadline === today);
+  const otherActiveTasks = activeTasks.filter(
+    (t) => !t.deadline || t.deadline > today
+  );
+
+  // Priority completion state
+  const priorities: string[] = todayEntry?.top_priorities || [];
+  const prioritiesDone: boolean[] = todayEntry?.priorities_done || [];
+  const allTopDone =
+    priorities.length > 0 &&
+    priorities.every((_, i) => !!prioritiesDone[i]);
 
   const greeting = getPepperGreeting(todayDate);
   const heroGreeting = greeting.greeting(nickname);
@@ -145,6 +239,13 @@ export default function TodayScreen() {
           <Text style={styles.heroSub}>{greeting.vibe}</Text>
         </View>
 
+        {/* Floating PEPPER reaction */}
+        {pepperReaction && (
+          <PepperBubble label="* PEPPER" variant="red" small style={{ marginBottom: Spacing.md }}>
+            {pepperReaction}
+          </PepperBubble>
+        )}
+
         {/* Next Sane Step (if PEPPER's been here) */}
         {todayEntry?.next_sane_step && (
           <CategoryCard
@@ -156,20 +257,114 @@ export default function TodayScreen() {
           />
         )}
 
-        {/* Top 3 */}
-        {todayEntry?.top_priorities && todayEntry.top_priorities.length > 0 && (
+        {/* Top 3 — now checkable */}
+        {priorities.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>TOP 3.</Text>
-            <Text style={styles.sectionHint}>not top 47.</Text>
-            {todayEntry.top_priorities.slice(0, 3).map((p: string, i: number) => (
-              <CategoryCard
-                key={i}
-                title={p}
-                badge={`${i + 1}`}
-                variant={i === 0 ? 'lime' : 'dark'}
-              />
-            ))}
+            <Text style={styles.sectionHint}>not top 47. tap to close one.</Text>
+            {priorities.slice(0, 3).map((p: string, i: number) => {
+              const done = !!prioritiesDone[i];
+              return (
+                <TouchableOpacity
+                  key={i}
+                  style={[
+                    styles.priorityCard,
+                    done && styles.priorityCardDone,
+                    !done && i === 0 && styles.priorityCardLime,
+                  ]}
+                  onPress={() => togglePriorityDone(i)}
+                  activeOpacity={0.85}
+                  testID={`priority-${i}`}
+                >
+                  <View
+                    style={[
+                      styles.priorityCheckbox,
+                      done && styles.priorityCheckboxDone,
+                    ]}
+                  >
+                    {done ? (
+                      <Ionicons name="checkmark" size={18} color={Colors.inkBlack} />
+                    ) : (
+                      <Text style={[
+                        styles.priorityNum,
+                        i === 0 && { color: Colors.inkBlack },
+                      ]}>{i + 1}</Text>
+                    )}
+                  </View>
+                  <Text
+                    style={[
+                      styles.priorityText,
+                      i === 0 && !done && { color: Colors.inkBlack },
+                      done && styles.priorityTextDone,
+                    ]}
+                  >
+                    {p}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            {allTopDone && (
+              <PepperBubble label="* PEPPER" variant="lime" style={{ marginTop: Spacing.sm }}>
+                TOP 3 DONE. now go drink water and log off.
+              </PepperBubble>
+            )}
           </>
+        )}
+
+        {/* PEPPER overdue nudge */}
+        {overdueTasks.length > 0 && (
+          <View style={styles.nudgeWrap}>
+            <PepperBubble label="* PEPPER" variant="red">
+              {loopOverdueNudge(overdueNudgeSeed)} {overdueTasks.length === 1
+                ? `"${overdueTasks[0].title}" was due ${overdueTasks[0].deadline}.`
+                : `${overdueTasks.length} loops are past due.`}
+            </PepperBubble>
+            {overdueTasks.slice(0, 3).map((t) => (
+              <View key={t.id} style={styles.nudgeRow}>
+                <View style={styles.nudgeTextWrap}>
+                  <Text style={styles.nudgeTitle}>{t.title}</Text>
+                  <Text style={styles.nudgeMeta}>due {t.deadline}</Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.nudgeBtn, styles.nudgeBtnYes]}
+                  onPress={() => markLoopDone(t)}
+                >
+                  <Text style={styles.nudgeBtnYesText}>DID IT</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.nudgeBtn, styles.nudgeBtnNo]}
+                  onPress={() => reopenLoop(t)}
+                >
+                  <Text style={styles.nudgeBtnNoText}>NAH</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* Due today */}
+        {dueTodayTasks.length > 0 && (
+          <View style={styles.nudgeWrap}>
+            <PepperBubble label="* PEPPER" variant="lilac">
+              {loopDueTodayNudge(overdueNudgeSeed)} {dueTodayTasks.length === 1
+                ? `"${dueTodayTasks[0].title}".`
+                : `${dueTodayTasks.length} things on the clock.`}
+            </PepperBubble>
+            {dueTodayTasks.map((t) => (
+              <View key={t.id} style={styles.nudgeRow}>
+                <View style={styles.nudgeTextWrap}>
+                  <Text style={styles.nudgeTitle}>{t.title}</Text>
+                  <Text style={styles.nudgeMeta}>due today</Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.nudgeBtn, styles.nudgeBtnYes]}
+                  onPress={() => markLoopDone(t)}
+                >
+                  <Text style={styles.nudgeBtnYesText}>DID IT</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
         )}
 
         {/* Survival basics */}
@@ -210,16 +405,26 @@ export default function TodayScreen() {
           </TouchableOpacity>
         </View>
 
-        {activeTasks.length === 0 ? (
+        {otherActiveTasks.length === 0 && activeTasks.length === 0 ? (
           <View style={styles.emptyLoops}>
             <Text style={styles.emptyText}>No loops. Clean kitchen.</Text>
           </View>
+        ) : otherActiveTasks.length === 0 ? (
+          <Text style={[styles.sectionHint, { marginBottom: Spacing.md }]}>
+            (everything above is on the clock)
+          </Text>
         ) : (
-          activeTasks.map((task) => (
+          otherActiveTasks.map((task) => (
             <CategoryCard
               key={task.id}
               title={task.title}
-              subtitle={task.next_action ? `→ ${task.next_action}` : task.deadline ? `due ${task.deadline}` : 'tap to update'}
+              subtitle={
+                task.next_action
+                  ? `→ ${task.next_action}`
+                  : task.deadline
+                  ? `due ${task.deadline}`
+                  : 'tap to update'
+              }
               variant="dark"
               onPress={() => openTaskEditor(task)}
               rightSlot={
@@ -405,6 +610,78 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   statusChipText: { color: Colors.pickleLime, fontSize: 18, fontWeight: '900' },
+  // Top 3 checkable cards
+  priorityCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Layout.cardPadding,
+    borderRadius: BorderRadius.xl,
+    marginBottom: Spacing.sm,
+  },
+  priorityCardLime: {
+    backgroundColor: Colors.pickleLime,
+    borderColor: Colors.pickleLime,
+  },
+  priorityCardDone: {
+    backgroundColor: Colors.inkBlack,
+    borderColor: Colors.borderStrong,
+    opacity: 0.6,
+  },
+  priorityCheckbox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: Colors.inkBlack,
+    backgroundColor: 'rgba(13,13,13,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: Spacing.md,
+  },
+  priorityCheckboxDone: {
+    backgroundColor: Colors.pickleLime,
+    borderColor: Colors.pickleLime,
+  },
+  priorityNum: { fontSize: Typography.fontSize.md, fontWeight: '900', color: Colors.text },
+  priorityText: {
+    flex: 1,
+    fontSize: Typography.fontSize.md,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  priorityTextDone: {
+    textDecorationLine: 'line-through',
+    color: Colors.textSubtle,
+    fontWeight: '500',
+  },
+  // PEPPER nudges (overdue / due today)
+  nudgeWrap: { marginTop: Spacing.md, marginBottom: Spacing.sm },
+  nudgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    marginBottom: Spacing.xs,
+    gap: Spacing.sm,
+  },
+  nudgeTextWrap: { flex: 1 },
+  nudgeTitle: { color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
+  nudgeMeta: { color: Colors.brightRed, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
+  nudgeBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+  },
+  nudgeBtnYes: { backgroundColor: Colors.pickleLime },
+  nudgeBtnYesText: { color: Colors.inkBlack, fontSize: Typography.fontSize.xs, fontWeight: '900', letterSpacing: 1 },
+  nudgeBtnNo: { backgroundColor: Colors.inkBlack, borderWidth: 1, borderColor: Colors.border },
+  nudgeBtnNoText: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
   editorScroll: { padding: Layout.screenPadding, paddingTop: 80 },
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
