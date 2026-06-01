@@ -40,14 +40,25 @@
 - Color-coded: pickle lime positive, pepper red negative
 - "Can I afford this?" notes
 
-### 5. Body Notes
-- Sleep, appetite, symptoms, medication, water, weight (optional)
-- Lilac accent (`#E2A9F1`)
+### 5. Body — A care-focused space ⭐ REDESIGNED
+- **4-tab navigation**: Today / Cycle / Meds / Appts
+- **TODAY**: Mood, sleep, water, symptoms, appetite + "ASK PEPPER" → care moves
+- **CYCLE**: Day-of-cycle indicator, next period prediction (days until + date), cycle/period length tracking
+- **MEDS**: Track medications including Ozempic-style jabs and vitamins, with delete-per-item
+- **APPTS**: Doctor/gyno/therapy appointments with relative-date callouts ("in 3 days", "2 days ago" red badge for overdue)
+- **PEPPER body advice** (`POST /api/pepper/advise-body`): reads all signals together, returns `vibe_read`, `care_moves[]`, `doctor_flag`, `permission`. Tone is gentler than chaos-dump (no cruel jokes even at extra_spicy).
+- Lilac accent (`#E2A9F1`) throughout to match brand body palette
 
-### 6. Receipts (Private)
-- Private people/power notes
-- Biometric/PIN lock via expo-local-authentication
-- Person name, relationship, promised, asked for, do_not_reveal, follow-ups, risk/trust
+### 6. Receipts — PEPPER reads the room ⭐ REDESIGNED
+- Locked screen: dark squircle lock badge, big bold "RECEIPTS" with italic "trust no one." tagline
+- Person list as floating CategoryCards with "R" badge and chevron — each person is a "consultation"
+- **Tap any person → bottom sheet** with PEPPER advice:
+  - **Verdict pill** (TRUST/CAUTION/CUT) with color coding
+  - **vibe_read** in red PEPPER speech bubble
+  - **THE MOVE** card (pickle lime, single clear action)
+  - **WATCH OUT FOR** flag list (red warning icons)
+  - **SAY THIS** lilac bubble (if a reply is appropriate, includes the exact draft text)
+- Backed by `POST /api/pepper/advise-person` with structured JSON
 
 ### 7. PEPPER History
 - Past check-ins timeline
