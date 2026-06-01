@@ -1,0 +1,59 @@
+{
+  "summary": "Iteration 4 — backend-only regression. 63/63 pytest cases PASSED (100%). New MoneyEntry fields (currency, doom_spends, soft_savings) round-trip cleanly through POST/GET/PUT. Verified 6 scenarios in tests/test_money_entry_extended.py: (1) Full POST with currency=EUR + 2 doom_spends (regret 4 and 3) + 2 soft_savings round-trips with all field values intact. (2) GET /api/money-entries/{user_id} returns the new fields with correct types and ordering. (3) PUT replaces doom_spends/soft_savings and changes currency EUR→GBP correctly. (4) Backwards-compat: legacy payload without the new fields still returns 200, currency defaults to 'USD', doom_spends and soft_savings come back as null. (5) regret values 0..4 (per spec) all round-trip correctly. (6) Empty arrays [] for doom_spends/soft_savings preserve as [] (not coerced to null). Regression: all 57 previously-passing endpoints still green — users, daily-entries, projects, tasks, money-entries (existing), body-logs, person-notes, pepper/checkin (normal/crisis/spice/nickname/auto-sync), pepper/history, pepper/transcribe, pepper/advise-person (5 cases), pepper/advise-body (3 cases), BodyLog extended fields (4 cases), register-push (graceful skip + validation), send-test-push.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/money-entries",
+        "issue": "doom_spends and soft_savings are typed as Optional[List[dict]] — no Pydantic sub-model validates the inner dict shape ({label, amount, regret, date}). A client could send {foo: 'bar'} as a doom_spend and it would persist silently. Consider DoomSpend/SoftSaving sub-models for stricter validation. Reference: /app/backend/server.py:155-156."
+      },
+      {
+        "endpoint": "POST /api/money-entries",
+        "issue": "regret is documented as 0-4 in the new spec but the model comment still says '1-5' (Reference: /app/backend/server.py:155). No range validation either way — values like 99 or -1 would be accepted."
+      },
+      {
+        "endpoint": "POST /api/money-entries",
+        "issue": "currency is a free-form string with no ISO-4217 validation — 'EURO', 'dollars', or '' are all accepted. Consider Literal['USD','EUR','GBP','JPY',...] or a regex/length check. Reference: /app/backend/server.py:146."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "ObjectId() casts still raise bson.errors.InvalidId → HTTP 500 instead of 404/400 on malformed ids in PUT/DELETE/GET-by-id endpoints. Not blocking."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_money_entry_extended.py",
+    "/app/backend/tests/test_saltcheck_backend.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/backend/tests/test_pepper_advice_and_body.py",
+    "/app/test_reports/pytest/pytest_iter4.xml"
+  ],
+  "action_items": [
+    "Optional: tighten doom_spends/soft_savings with Pydantic sub-models (DoomSpend{label,amount,regret 0-4,date}, SoftSaving{label,amount,date}).",
+    "Optional: fix stale comment on server.py:155 — says 'regret: 1-5' but spec/tests treat it as 0-4.",
+    "Optional: validate currency against a known set (ISO 4217) or Literal of supported codes.",
+    "Carry-over: wrap ObjectId() casts to return 404 on malformed ids; split server.py (now 1040 lines) into routers."
+  ],
+  "critical_code_review_comments": [
+    "MoneyEntryCreate and MoneyEntryResponse correctly mark all three new fields Optional with sensible defaults (currency='USD', doom_spends=None, soft_savings=None) — legacy clients keep working.",
+    "MoneyEntryResponse uses Optional[List[dict]] = None which round-trips fine, but loses type safety on inner shape — see minor issues above.",
+    "Update endpoint /api/money-entries/{entry_id} uses model_dump() so unset Optional fields are sent as None and overwrite existing values. This is fine for the current MVP since the frontend always sends the full document, but a partial-update PATCH would silently nuke fields.",
+    "server.py is now 1040 lines — still above the 700-line guideline. Recommend splitting into routers (pepper.py, money.py, body.py, crud.py, push.py).",
+    "No DELETE endpoint exists for money-entries, body-logs, or daily-entries — test data accumulates across iterations. Consider adding DELETEs for cleanup hooks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_money_entry_extended.py (new — 6 tests)"
+  ],
+  "success_rate": {"backend": "100% (63/63)", "frontend": "not_tested"},
+  "seed_data_creation": "New test docs prefixed TEST_money_ext_user, TEST_money_legacy_user, TEST_money_regret_user, TEST_money_empty_lists in money_entries collection. No DELETE endpoint exists for money-entries so these persist; not user-visible (different user_id from 'default_user').",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env routes /api/*. All 63 backend tests pass in ~38s. New MoneyEntry fields verified: currency (string, default USD), doom_spends (List[dict] with {label,amount,regret 0-4,date}), soft_savings (List[dict] with {label,amount,date}). Empty list [] is preserved as [] (not null). regret accepts 0..4 inclusive without server-side range validation. New tests live in tests/test_money_entry_extended.py.",
+  "rca_of_issue": "No bugs found in iteration 4. Extended MoneyEntry feature is working end-to-end on the backend."
+}

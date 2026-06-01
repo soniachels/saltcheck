@@ -1,145 +1,58 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Layout, Spacing, BorderRadius } from '../../src/theme';
-import { Card } from '../../src/components/Card';
-import { Ionicons } from '@expo/vector-icons';
+import { CategoryCard } from '../../src/components/CategoryCard';
 import { useAppStore } from '../../src/store/appStore';
 
 export default function MoreScreen() {
   const router = useRouter();
-  const { user } = useAppStore();
-
-  const MenuItem = ({ title, subtitle, icon, onPress }: any) => (
-    <TouchableOpacity onPress={onPress}>
-      <Card variant="default">
-        <View style={styles.menuItem}>
-          <View style={styles.menuIcon}>
-            <Ionicons name={icon} size={24} color={Colors.pepperRed} />
-          </View>
-          <View style={styles.menuContent}>
-            <Text style={styles.menuTitle}>{title}</Text>
-            {subtitle && <Text style={styles.menuSubtitle}>{subtitle}</Text>}
-          </View>
-          <Ionicons name="chevron-forward" size={24} color={Colors.steelBlueGrey} />
-        </View>
-      </Card>
-    </TouchableOpacity>
-  );
+  const { nickname, pepperSpiceLevel } = useAppStore();
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Text style={styles.greeting}>Hey there</Text>
-        <Text style={styles.subtitle}>More tools for managing the chaos</Text>
-      </View>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.hero}>
+          <Text style={styles.heroLabel}>* MORE</Text>
+          <Text style={styles.heroTitle}>{nickname ? `hey ${nickname.toLowerCase()}.` : 'more tools.'}</Text>
+          <Text style={styles.heroSub}>everything else lives here.</Text>
+        </View>
 
-      <MenuItem
-        title="Body"
-        subtitle="Cycle, meds, appointments — PEPPER checks in"
-        icon="heart"
-        onPress={() => router.push('/body-notes')}
-      />
+        <CategoryCard
+          title="Settings"
+          subtitle={`spice: ${pepperSpiceLevel.replace('_', ' ')} · reminders · danger zone`}
+          icon="settings"
+          variant="dark"
+          onPress={() => router.push('/settings')}
+        />
 
-      <MenuItem
-        title="Receipts"
-        subtitle="People notes — PEPPER reads the room"
-        icon="lock-closed"
-        onPress={() => router.push('/receipts')}
-      />
+        <CategoryCard
+          title="PEPPER History"
+          subtitle="past check-ins and plans"
+          icon="time"
+          variant="dark"
+          onPress={() => router.push('/pepper-history')}
+        />
 
-      <MenuItem
-        title="PEPPER History"
-        subtitle="Past check-ins and plans"
-        icon="time"
-        onPress={() => router.push('/pepper-history')}
-      />
-
-      <MenuItem
-        title="Settings"
-        subtitle="Spice level, reminders, danger zone"
-        icon="settings"
-        onPress={() => router.push('/settings')}
-      />
-
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel}>ABOUT</Text>
-        <Card variant="default">
-          <Text style={styles.aboutText}>Salt Check v1.0</Text>
-          <Text style={styles.aboutSubtext}>Developed by saltylabz</Text>
-          <Text style={styles.aboutSubtext}>Managed by PEPPER</Text>
-        </Card>
-      </View>
-    </ScrollView>
+        <View style={styles.about}>
+          <Text style={styles.aboutTitle}>SALT CHECK v1.0</Text>
+          <Text style={styles.aboutText}>by saltylabz</Text>
+          <Text style={styles.aboutText}>managed by PEPPER</Text>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  content: {
-    padding: Layout.screenPadding,
-    paddingBottom: 100,
-  },
-  header: {
-    marginBottom: Spacing.lg,
-  },
-  greeting: {
-    fontSize: Typography.fontSize.xxl,
-    fontWeight: 'bold',
-    color: Colors.text,
-    marginBottom: Spacing.xs,
-  },
-  subtitle: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.steelBlueGrey,
-  },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  menuIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.darkGreen,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-  },
-  menuContent: {
-    flex: 1,
-  },
-  menuTitle: {
-    fontSize: Typography.fontSize.md,
-    fontWeight: '600',
-    color: Colors.text,
-    marginBottom: 2,
-  },
-  menuSubtitle: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.steelBlueGrey,
-  },
-  section: {
-    marginTop: Spacing.xl,
-  },
-  sectionLabel: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.pepperRed,
-    fontWeight: '600',
-    letterSpacing: 1,
-    marginBottom: Spacing.md,
-  },
-  aboutText: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.text,
-    marginBottom: Spacing.xs,
-  },
-  aboutSubtext: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.steelBlueGrey,
-    marginBottom: Spacing.xs,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
+  content: { padding: Layout.screenPadding, paddingBottom: 100 },
+  hero: { marginBottom: Spacing.xl },
+  heroLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 3, marginBottom: 6 },
+  heroTitle: { fontSize: Typography.fontSize.display, fontWeight: '900', color: Colors.text, letterSpacing: 1 },
+  heroSub: { fontSize: Typography.fontSize.base, color: Colors.textSubtle, fontStyle: 'italic', marginTop: 4 },
+  about: { marginTop: Spacing.xxl, alignItems: 'center' },
+  aboutTitle: { color: Colors.text, fontSize: Typography.fontSize.sm, fontWeight: '800', letterSpacing: 2, marginBottom: 4 },
+  aboutText: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, marginTop: 2 },
 });

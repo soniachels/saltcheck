@@ -1,272 +1,394 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
-import { Colors, Typography, Layout, Spacing, BorderRadius } from '../../src/theme';
-import { Card } from '../../src/components/Card';
+import React, { useState, useCallback, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Modal,
+  Alert,
+} from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Colors, Typography, Layout, Spacing, BorderRadius } from '../../src/theme';
+import { CategoryCard } from '../../src/components/CategoryCard';
+import { PepperBubble } from '../../src/components/PepperBubble';
+import { Button } from '../../src/components/Button';
+import { Input } from '../../src/components/Input';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
-import { useRouter, useFocusEffect } from 'expo-router';
 
 export default function TodayScreen() {
+  const { currentUserId, nickname } = useAppStore();
   const [todayEntry, setTodayEntry] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const { currentUserId } = useAppStore();
-  const router = useRouter();
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [taskModal, setTaskModal] = useState(false);
+  const [editingTask, setEditingTask] = useState<any>(null);
+  const [taskForm, setTaskForm] = useState({ title: '', next_action: '', deadline: '' });
 
-  const loadTodayEntry = async () => {
+  const today = new Date().toISOString().split('T')[0];
+  const todayDate = new Date();
+  const dayName = todayDate.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
+  const monthDay = todayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  const loadAll = async () => {
     try {
-      const today = new Date().toISOString().split('T')[0];
-      const response = await apiClient.get(`/daily-entries/${currentUserId}/${today}`);
-      setTodayEntry(response.data);
-    } catch (error) {
-      // No entry for today yet
-      setTodayEntry(null);
+      const [entryRes, tasksRes] = await Promise.all([
+        apiClient.get(`/daily-entries/${currentUserId}/${today}`).catch(() => ({ data: null })),
+        apiClient.get(`/tasks/${currentUserId}`).catch(() => ({ data: [] })),
+      ]);
+      setTodayEntry(entryRes.data);
+      setTasks(tasksRes.data || []);
+    } catch (e) {
+      console.error(e);
     }
   };
 
-  // Refetch every time the screen gains focus (e.g. after PEPPER check-in)
-  useFocusEffect(
-    useCallback(() => {
-      loadTodayEntry();
-    }, [])
-  );
+  useFocusEffect(useCallback(() => { loadAll(); }, []));
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await loadTodayEntry();
-    setRefreshing(false);
-  };
-
-  const toggleCheck = async (field: string, value: boolean) => {
-    if (!todayEntry) return;
-    
-    try {
-      const updated = { ...todayEntry, [field]: !value };
-      await apiClient.put(`/daily-entries/${todayEntry.id}`, updated);
-      setTodayEntry(updated);
-    } catch (error) {
-      console.error('Failed to update:', error);
+  const toggleCheck = async (field: string, current: boolean) => {
+    if (!todayEntry) {
+      // Create a minimal entry first
+      const created = await apiClient.post(
+        `/daily-entries?user_id=${currentUserId}`,
+        { date: today, [field]: !current }
+      );
+      setTodayEntry(created.data);
+      return;
     }
+    const updated = { ...todayEntry, [field]: !current };
+    delete (updated as any).id;
+    delete (updated as any).user_id;
+    delete (updated as any).created_at;
+    delete (updated as any).updated_at;
+    const r = await apiClient.put(`/daily-entries/${todayEntry.id}`, updated);
+    setTodayEntry(r.data);
   };
 
-  const CheckItem = ({ label, checked, field }: { label: string; checked: boolean; field: string }) => (
-    <TouchableOpacity
-      style={styles.checkItem}
-      onPress={() => toggleCheck(field, checked)}
-    >
-      <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-        {checked && <Ionicons name="checkmark" size={20} color={Colors.inkBlack} />}
-      </View>
-      <Text style={[styles.checkLabel, checked && styles.checkLabelDone]}>{label}</Text>
-    </TouchableOpacity>
-  );
+  const openTaskEditor = (task?: any) => {
+    if (task) {
+      setEditingTask(task);
+      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '' });
+    } else {
+      setEditingTask(null);
+      setTaskForm({ title: '', next_action: '', deadline: '' });
+    }
+    setTaskModal(true);
+  };
+
+  const saveTask = async () => {
+    if (!taskForm.title.trim()) {
+      Alert.alert('Hold up', 'Give it a name first.');
+      return;
+    }
+    const payload = {
+      title: taskForm.title,
+      next_action: taskForm.next_action,
+      deadline: taskForm.deadline,
+      status: editingTask?.status || 'not_started',
+      parked: editingTask?.parked || false,
+    };
+    if (editingTask) {
+      await apiClient.put(`/tasks/${editingTask.id}`, payload);
+    } else {
+      await apiClient.post(`/tasks?user_id=${currentUserId}`, payload);
+    }
+    setTaskModal(false);
+    loadAll();
+  };
+
+  const cycleStatus = async (task: any) => {
+    const order = ['not_started', 'in_progress', 'waiting', 'done'];
+    const next = order[(order.indexOf(task.status) + 1) % order.length];
+    const payload = { ...task, status: next };
+    delete payload.id;
+    delete payload.user_id;
+    delete payload.created_at;
+    delete payload.updated_at;
+    await apiClient.put(`/tasks/${task.id}`, payload);
+    loadAll();
+  };
+
+  const deleteTask = async (id: string) => {
+    await apiClient.delete(`/tasks/${id}`);
+    setTaskModal(false);
+    loadAll();
+  };
+
+  const activeTasks = tasks.filter((t) => !t.parked && t.status !== 'done');
+  const doneTasks = tasks.filter((t) => t.status === 'done');
+  const parkedTasks = tasks.filter((t) => t.parked);
+
+  const greeting = nickname ? `hey ${nickname.toLowerCase()}.` : 'hey.';
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.pepperRed} />}
-    >
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.date}>{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</Text>
-        <Text style={styles.tagline}>Clean slate. Let's not waste it.</Text>
-      </View>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* Hero */}
+        <View style={styles.hero}>
+          <Text style={styles.dateLabel}>
+            {dayName} · {monthDay.toUpperCase()}
+          </Text>
+          <Text style={styles.heroTitle}>{greeting}</Text>
+          <Text style={styles.heroSub}>clean slate. let's not waste it.</Text>
+        </View>
 
-      {/* Next Sane Step */}
-      {todayEntry?.next_sane_step && (
-        <Card style={styles.nextStepCard}>
-          <Text style={styles.nextStepLabel}>NEXT SANE STEP</Text>
-          <Text style={styles.nextStep}>{todayEntry.next_sane_step}</Text>
-        </Card>
-      )}
+        {/* Next Sane Step (if PEPPER's been here) */}
+        {todayEntry?.next_sane_step && (
+          <CategoryCard
+            title={todayEntry.next_sane_step}
+            subtitle="NEXT SANE STEP"
+            icon="flame"
+            variant="red"
+            large
+          />
+        )}
 
-      {/* Top Priorities */}
-      {todayEntry?.top_priorities && todayEntry.top_priorities.length > 0 && (
-        <Card variant="default">
-          <Text style={styles.sectionLabel}>TOP 3. NOT TOP 47.</Text>
-          {todayEntry.top_priorities.slice(0, 3).map((priority: string, index: number) => (
-            <View key={index} style={styles.priorityItem}>
-              <Text style={styles.priorityNumber}>{index + 1}</Text>
-              <Text style={styles.priorityText}>{priority}</Text>
+        {/* Top 3 */}
+        {todayEntry?.top_priorities && todayEntry.top_priorities.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>TOP 3.</Text>
+            <Text style={styles.sectionHint}>not top 47.</Text>
+            {todayEntry.top_priorities.slice(0, 3).map((p: string, i: number) => (
+              <CategoryCard
+                key={i}
+                title={p}
+                badge={`${i + 1}`}
+                variant={i === 0 ? 'lime' : 'dark'}
+              />
+            ))}
+          </>
+        )}
+
+        {/* Survival basics */}
+        <Text style={styles.sectionLabel}>SURVIVAL BASICS.</Text>
+        <View style={styles.basicsRow}>
+          {(['water_checked', 'food_checked', 'hygiene_checked'] as const).map((field, i) => {
+            const checked = todayEntry?.[field] || false;
+            const labels = ['WATER', 'FOOD', 'HYGIENE'];
+            const icons: any[] = ['water', 'restaurant', 'sparkles'];
+            return (
+              <TouchableOpacity
+                key={field}
+                style={[styles.basicTile, checked && styles.basicTileChecked]}
+                onPress={() => toggleCheck(field, checked)}
+                testID={`survival-${labels[i].toLowerCase()}`}
+              >
+                <Ionicons
+                  name={checked ? 'checkmark-circle' : icons[i]}
+                  size={28}
+                  color={checked ? Colors.inkBlack : Colors.softSpiceLilac}
+                />
+                <Text style={[styles.basicLabel, checked && styles.basicLabelChecked]}>
+                  {labels[i]}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Open Loops (merged) */}
+        <View style={styles.loopsHeader}>
+          <Text style={styles.sectionLabel}>OPEN LOOPS.</Text>
+          <TouchableOpacity onPress={() => openTaskEditor()} testID="add-loop-btn">
+            <View style={styles.addLoopBtn}>
+              <Ionicons name="add" size={18} color={Colors.saltBone} />
+              <Text style={styles.addLoopText}>NEW LOOP</Text>
             </View>
-          ))}
-        </Card>
-      )}
+          </TouchableOpacity>
+        </View>
 
-      {/* Daily Checklist */}
-      <Card variant="default">
-        <Text style={styles.sectionLabel}>SURVIVAL BASICS</Text>
-        <CheckItem label="Water" checked={todayEntry?.water_checked || false} field="water_checked" />
-        <CheckItem label="Food" checked={todayEntry?.food_checked || false} field="food_checked" />
-        <CheckItem label="Hygiene/Shower" checked={todayEntry?.hygiene_checked || false} field="hygiene_checked" />
-      </Card>
+        {activeTasks.length === 0 ? (
+          <View style={styles.emptyLoops}>
+            <Text style={styles.emptyText}>No loops. Clean kitchen.</Text>
+          </View>
+        ) : (
+          activeTasks.map((task) => (
+            <CategoryCard
+              key={task.id}
+              title={task.title}
+              subtitle={task.next_action ? `→ ${task.next_action}` : task.deadline ? `due ${task.deadline}` : 'tap to update'}
+              variant="dark"
+              onPress={() => openTaskEditor(task)}
+              rightSlot={
+                <TouchableOpacity onPress={() => cycleStatus(task)} style={styles.statusChip}>
+                  <Text style={styles.statusChipText}>
+                    {task.status === 'in_progress' ? '◐' : task.status === 'waiting' ? '◑' : '○'}
+                  </Text>
+                </TouchableOpacity>
+              }
+            />
+          ))
+        )}
 
-      {/* Quick Actions */}
-      <Card variant="default">
-        <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
-        
-        {todayEntry?.work_action && (
-          <View style={styles.actionItem}>
-            <Text style={styles.actionLabel}>WORK:</Text>
-            <Text style={styles.actionText}>{todayEntry.work_action}</Text>
-          </View>
+        {parkedTasks.length > 0 && (
+          <>
+            <Text style={[styles.sectionLabel, { marginTop: Spacing.lg }]}>PARKED.</Text>
+            {parkedTasks.map((task) => (
+              <CategoryCard
+                key={task.id}
+                title={task.title}
+                badge="P"
+                variant="dark"
+                onPress={() => openTaskEditor(task)}
+              />
+            ))}
+          </>
         )}
-        
-        {todayEntry?.money_action && (
-          <View style={styles.actionItem}>
-            <Text style={styles.actionLabel}>MONEY:</Text>
-            <Text style={styles.actionText}>{todayEntry.money_action}</Text>
-          </View>
-        )}
-        
-        {todayEntry?.life_admin_action && (
-          <View style={styles.actionItem}>
-            <Text style={styles.actionLabel}>LIFE:</Text>
-            <Text style={styles.actionText}>{todayEntry.life_admin_action}</Text>
-          </View>
-        )}
-      </Card>
 
-      {/* CTA to PEPPER */}
-      {!todayEntry && (
-        <TouchableOpacity
-          style={styles.pepperCTA}
-          onPress={() => router.push('/(tabs)/pepper-checkin')}
-        >
-          <Text style={styles.pepperCTAText}>No plan yet. Let PEPPER sort it.</Text>
-          <Ionicons name="arrow-forward" size={24} color={Colors.saltBone} />
-        </TouchableOpacity>
-      )}
-    </ScrollView>
+        {doneTasks.length > 0 && (
+          <>
+            <Text style={[styles.sectionLabel, { marginTop: Spacing.lg }]}>DONE.</Text>
+            <Text style={styles.sectionHint}>{doneTasks.length} loops closed.</Text>
+          </>
+        )}
+
+        {!todayEntry && (
+          <PepperBubble label="* PEPPER" variant="red" style={{ marginTop: Spacing.lg }}>
+            No plan yet. Tap the flame to dump and I'll sort it.
+          </PepperBubble>
+        )}
+
+        <View style={{ height: 100 }} />
+      </ScrollView>
+
+      {/* Task editor */}
+      <Modal visible={taskModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <ScrollView contentContainerStyle={styles.editorScroll}>
+            <View style={styles.editorCard}>
+              <Text style={styles.editorTitle}>{editingTask ? 'EDIT LOOP' : 'NEW LOOP'}</Text>
+              <Input
+                label="WHAT IS IT?"
+                value={taskForm.title}
+                onChangeText={(t) => setTaskForm({ ...taskForm, title: t })}
+                placeholder="Send pitch deck"
+              />
+              <Input
+                label="NEXT ACTION"
+                value={taskForm.next_action}
+                onChangeText={(t) => setTaskForm({ ...taskForm, next_action: t })}
+                placeholder="The actual next move"
+              />
+              <Input
+                label="DEADLINE"
+                value={taskForm.deadline}
+                onChangeText={(t) => setTaskForm({ ...taskForm, deadline: t })}
+                placeholder="YYYY-MM-DD (optional)"
+              />
+              <View style={styles.editorActions}>
+                <Button title="CANCEL" onPress={() => setTaskModal(false)} variant="ghost" />
+                <Button title="SAVE" onPress={saveTask} variant="primary" />
+              </View>
+              {editingTask && (
+                <Button
+                  title="DELETE"
+                  onPress={() => deleteTask(editingTask.id)}
+                  variant="danger"
+                  style={{ marginTop: Spacing.md }}
+                />
+              )}
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  content: {
-    padding: Layout.screenPadding,
-    paddingBottom: 100,
-  },
-  header: {
-    marginBottom: Spacing.lg,
-  },
-  date: {
-    fontSize: Typography.fontSize.xxl,
-    fontWeight: 'bold',
-    color: Colors.text,
-    marginBottom: Spacing.xs,
-  },
-  tagline: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.steelBlueGrey,
-  },
-  nextStepCard: {
-    backgroundColor: Colors.pepperRed,
-    borderWidth: 2,
-    borderColor: Colors.brightRed,
-  },
-  nextStepLabel: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.saltBone,
-    fontWeight: '600',
-    letterSpacing: 1,
+  container: { flex: 1, backgroundColor: Colors.background },
+  content: { padding: Layout.screenPadding, paddingBottom: 120 },
+  hero: { marginBottom: Spacing.xl },
+  dateLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.brightRed,
+    fontWeight: '800',
+    letterSpacing: 2,
     marginBottom: Spacing.sm,
   },
-  nextStep: {
-    fontSize: Typography.fontSize.lg,
-    color: Colors.saltBone,
-    fontWeight: '600',
-    lineHeight: Typography.fontSize.lg * 1.5,
+  heroTitle: {
+    fontSize: Typography.fontSize.display,
+    fontWeight: '900',
+    color: Colors.text,
+    letterSpacing: 1,
+  },
+  heroSub: {
+    fontSize: Typography.fontSize.base,
+    color: Colors.textSubtle,
+    fontStyle: 'italic',
+    marginTop: 4,
   },
   sectionLabel: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.pepperRed,
-    fontWeight: '600',
-    letterSpacing: 1,
-    marginBottom: Spacing.md,
-  },
-  priorityItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: Spacing.md,
-  },
-  priorityNumber: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: Colors.pickleLime,
-    color: Colors.inkBlack,
-    fontSize: Typography.fontSize.md,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    lineHeight: 28,
-    marginRight: Spacing.sm,
-  },
-  priorityText: {
-    flex: 1,
-    fontSize: Typography.fontSize.base,
-    color: Colors.text,
-    lineHeight: Typography.fontSize.base * 1.5,
-  },
-  checkItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: Colors.steelBlueGrey,
-    marginRight: Spacing.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  checkboxChecked: {
-    backgroundColor: Colors.pickleLime,
-    borderColor: Colors.pickleLime,
-  },
-  checkLabel: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.text,
-  },
-  checkLabelDone: {
-    textDecorationLine: 'line-through',
-    color: Colors.steelBlueGrey,
-  },
-  actionItem: {
-    marginBottom: Spacing.md,
-  },
-  actionLabel: {
     fontSize: Typography.fontSize.xs,
-    color: Colors.pepperRed,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    marginBottom: 4,
+    color: Colors.brightRed,
+    fontWeight: '800',
+    letterSpacing: 2,
+    marginTop: Spacing.md,
   },
-  actionText: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.text,
-    lineHeight: Typography.fontSize.base * 1.5,
+  sectionHint: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.textSubtle,
+    marginBottom: Spacing.md,
   },
-  pepperCTA: {
-    backgroundColor: Colors.pepperRed,
-    borderRadius: BorderRadius.lg,
-    padding: Layout.cardPadding,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  basicsRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm, marginBottom: Spacing.lg },
+  basicTile: {
+    flex: 1,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.xl,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
     alignItems: 'center',
-    marginTop: Spacing.lg,
   },
-  pepperCTAText: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: '600',
-    color: Colors.saltBone,
+  basicTileChecked: {
+    backgroundColor: Colors.softSpiceLilac,
+    borderColor: Colors.softSpiceLilac,
   },
+  basicLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginTop: 6,
+  },
+  basicLabelChecked: { color: Colors.inkBlack },
+  loopsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.md, marginBottom: Spacing.sm },
+  addLoopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.brightRed,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+  },
+  addLoopText: { color: Colors.saltBone, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1, marginLeft: 4 },
+  emptyLoops: {
+    backgroundColor: Colors.charcoalRaised,
+    padding: Layout.cardPaddingLarge,
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  emptyText: { color: Colors.textSubtle, fontSize: Typography.fontSize.base, fontStyle: 'italic' },
+  statusChip: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.inkBlack,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statusChipText: { color: Colors.pickleLime, fontSize: 18, fontWeight: '900' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
+  editorScroll: { padding: Layout.screenPadding, paddingTop: 80 },
+  editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
+  editorTitle: { fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 1, marginBottom: Spacing.lg },
+  editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
 });

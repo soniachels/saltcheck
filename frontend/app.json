@@ -59,7 +59,8 @@
           "color": "#C4191E",
           "defaultChannel": "default"
         }
-      ]
+      ],
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": true

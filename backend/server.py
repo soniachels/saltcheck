@@ -143,6 +143,7 @@ class TaskResponse(BaseModel):
 
 class MoneyEntryCreate(BaseModel):
     date: str
+    currency: Optional[str] = "USD"
     cash_available: Optional[float] = None
     expected_income: Optional[float] = None
     upcoming_bills: Optional[float] = None
@@ -150,11 +151,15 @@ class MoneyEntryCreate(BaseModel):
     urgent_payments: Optional[str] = None
     payment_followups: Optional[str] = None
     afford_note: Optional[str] = None
+    # Doom Spending + Soft Saving
+    doom_spends: Optional[List[dict]] = None   # [{label, amount, regret: 1-5, date}]
+    soft_savings: Optional[List[dict]] = None  # [{label, amount, date}]
 
 class MoneyEntryResponse(BaseModel):
     id: str
     user_id: str
     date: str
+    currency: Optional[str] = "USD"
     cash_available: Optional[float]
     expected_income: Optional[float]
     upcoming_bills: Optional[float]
@@ -162,6 +167,8 @@ class MoneyEntryResponse(BaseModel):
     urgent_payments: Optional[str]
     payment_followups: Optional[str]
     afford_note: Optional[str]
+    doom_spends: Optional[List[dict]] = None
+    soft_savings: Optional[List[dict]] = None
     created_at: datetime
     updated_at: datetime
 
