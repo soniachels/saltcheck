@@ -1,0 +1,64 @@
+{
+  "summary": "Backend regression + new-feature testing for Salt Check iteration 2. 43/44 pytest cases passed (97.7%). All previous 31 regression tests still green. New features verified: (1) PEPPER spice_level (mild/medium/extra_spicy) + nickname tuning - all spice levels return valid structured responses, crisis 'I want to die' overrides extra_spicy and contains safety language with no 'park' wording. (2) PEPPER -> daily_entries auto-sync confirmed: a POST to /api/pepper/checkin now creates a YYYY-MM-DD daily entry whose top_priorities mirror the first 3 salt_check items, next_sane_step is populated, money_action = ai.money_check, medication_note = ai.body_check, and water/food/hygiene default to False. Second same-day check-in UPDATES the existing entry (no duplicate; entry_id is stable) and preserves user-toggled survival checkboxes. (3) /api/pepper/transcribe accepts multipart wav upload, returns {\"text\": \"...\"} (with EMERGENT_LLM_KEY active - returned empty string for silent audio, which is expected), and returns 422 when no file is sent. (4) /api/send-test-push gracefully returns {\"status\": \"failed\", \"reason\": \"...\"} with the placeholder push key - no crash. (5) BUG FOUND: /api/register-push does NOT degrade gracefully with the placeholder EMERGENT_PUSH_KEY - it returns HTTP 500 with {\"detail\": \"EMERGENT_PUSH_KEY missing or invalid\"} instead of the contracted {\"status\": \"skipped\", \"reason\": \"...\"}.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/register-push",
+        "issue": "When EMERGENT_PUSH_KEY is the placeholder, upstream returns 401 -> handler raises HTTPException(500) -> 'except HTTPException: raise' re-raises it -> client receives HTTP 500 {\"detail\": \"EMERGENT_PUSH_KEY missing or invalid\"}. Contract requires {\"status\": \"skipped\", \"reason\": \"...\"} with HTTP 200. Reference: /app/backend/server.py:772-786. Fix: remove the explicit 'except HTTPException: raise' OR convert the 401 branch to 'return {\"status\": \"skipped\", \"reason\": \"EMERGENT_PUSH_KEY missing or invalid\"}'.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/register-push",
+        "issue": "Declared status_code=201, but returns 200 on the 'skipped' fallback path (FastAPI returns the model body but status_code stays 201 for raise_for_status path). Inconsistent. Reference: /app/backend/server.py:772."
+      },
+      {
+        "endpoint": "POST /api/pepper/transcribe",
+        "issue": "Uses raw 'except Exception as e' wrapping the Whisper call - if the upstream key is missing this returns 500 with the raw error string. Consider returning 503 or a {\"text\": \"\", \"error\": \"...\"} graceful shape consistent with the push endpoints."
+      },
+      {
+        "endpoint": "/api/pepper/checkin",
+        "issue": "Daily-entry sync overwrites work_action/life_admin_action with None when the new salt_check has no matching keyword. If user has set these manually, they will be cleared on next PEPPER check-in (only water/food/hygiene checkboxes are preserved). Reference: /app/backend/server.py:419-437."
+      },
+      {
+        "endpoint": "GET /api/users/{user_id} and all PUT/DELETE /api/{resource}/{id}",
+        "issue": "Carried over from iteration 1: ObjectId(invalid_string) raises bson.errors.InvalidId -> HTTP 500 instead of 404/400."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_saltcheck_backend.py",
+    "/app/backend/tests/test_new_features.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "FIX /api/register-push so a placeholder EMERGENT_PUSH_KEY returns HTTP 200 {\"status\": \"skipped\", \"reason\": \"...\"} instead of HTTP 500. Either drop the 'except HTTPException: raise' block, or replace the inner 'raise HTTPException(500, ...)' with a direct return of the skipped payload.",
+    "Decide whether PEPPER auto-sync should preserve user-edited work_action/life_admin_action/money_action/medication_note (current behaviour overwrites them with whatever the new LLM call returns or None). Only water/food/hygiene checkboxes are preserved.",
+    "Consider aligning /api/pepper/transcribe error shape with the push endpoints (graceful JSON instead of HTTP 500) so the mobile client can render a friendly fallback.",
+    "Carry-over from iteration 1: wrap ObjectId() casts with InvalidId handling to return 404 on malformed ids."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew to 829 lines - past the 700-line guideline. Split into routers: pepper.py, push.py, daily.py, crud.py.",
+    "Push client uses module-level httpx.AsyncClient with no shutdown hook - clean shutdown will leave the connection open. Register an @app.on_event('shutdown') or use lifespan to await _push_client.aclose().",
+    "Duplicate logic between send_push() and the auto-sync block in pepper_checkin (both inspect salt_check items by keyword). Extract a small helper.",
+    "EMERGENT_PUSH_KEY default is the literal string 'placeholder' - that string then gets sent as the X-Push-Key header. Safer to leave it None and short-circuit before HTTP if missing.",
+    "Auto-sync overwrites top_priorities unconditionally with salt_check[:3]; if the user has hand-curated priorities they will be lost on next PEPPER call."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_new_features.py (new - 13 tests)"
+  ],
+  "success_rate": {"backend": "97.7%", "frontend": "not_tested"},
+  "seed_data_creation": "Test users prefixed TEST_spice_*, TEST_sync_*, TEST_push_user. PEPPER check-ins and daily entries are left in MongoDB (no DELETE endpoint). Projects/tasks/notes are cleaned up via teardown.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Public URL EXPO_PUBLIC_BACKEND_URL via /app/frontend/.env routes only /api/*. 13 new tests added in test_new_features.py. The single failure (test_register_push_does_not_crash) reflects a real bug, NOT a test issue - the endpoint returns 500 instead of 200+{status:skipped} when the push key is the placeholder. After main agent fixes the register-push graceful-failure path, re-run pytest /app/backend/tests/ - expect 44/44.",
+  "rca_of_issue": "BUG: POST /api/register-push returns HTTP 500 with placeholder push key. Reproduction: curl -X POST $EXPO_PUBLIC_BACKEND_URL/api/register-push -H 'Content-Type: application/json' -d '{\"user_id\":\"u\",\"platform\":\"android\",\"device_token\":\"t\"}' -> HTTP 500 {\"detail\":\"EMERGENT_PUSH_KEY missing or invalid\"}. Root cause: server.py:776-783 -- upstream returns 401 (placeholder key) -> 'raise HTTPException(500, ...)' inside try block -> immediately caught by 'except HTTPException: raise' which propagates it to the client, bypassing the generic 'except Exception' fallback that would have returned {\"status\":\"skipped\"}. Mitigation: change the 401 handler to 'return {\"status\":\"skipped\",\"reason\":\"EMERGENT_PUSH_KEY missing or invalid\"}' OR delete the 'except HTTPException: raise' line so the generic handler catches it. The /api/send-test-push endpoint correctly handles this case because it wraps everything in 'except Exception as e' without a prior HTTPException re-raise."
+}

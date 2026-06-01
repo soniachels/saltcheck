@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
@@ -6,9 +6,12 @@ from typing import Optional, List, Literal
 from datetime import datetime
 from bson import ObjectId
 import os
+import tempfile
+import httpx
 from dotenv import load_dotenv
 import bcrypt
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai import OpenAISpeechToText
 
 load_dotenv()
 
@@ -217,6 +220,8 @@ class PersonNoteResponse(BaseModel):
 class AICheckInRequest(BaseModel):
     raw_dump: str
     user_context: Optional[dict] = None
+    spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
+    nickname: Optional[str] = None
 
 class AICheckInResponse(BaseModel):
     id: str
@@ -336,11 +341,22 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
                 "closer": "I'm really glad you said it. Please reach out to someone who can be with you right now."
             }
         else:
+            # Tune PEPPER's tone based on user-selected spice level
+            spice_modifier = {
+                "mild": "Override: dial back the sass. Be warm, direct, and supportive. Still concise. No 'girl please' or 'be so for real'. Keep the food/salt metaphors.",
+                "medium": "Default tone: balanced sass and warmth. Use brand voice naturally.",
+                "extra_spicy": "Override: max chaos energy. More sass, more 'be so for real', more 'we are not doing this right now'. Stay protective, never cruel.",
+            }.get(checkin.spice_level, "")
+            
+            nickname_hint = f"\nThe user goes by '{checkin.nickname}'. Use the name sparingly and naturally, max once." if checkin.nickname else ""
+            
+            tuned_system_prompt = f"{PEPPER_SYSTEM_PROMPT}\n\n{spice_modifier}{nickname_hint}"
+            
             # Normal PEPPER response
             chat = LlmChat(
                 api_key=EMERGENT_LLM_KEY,
                 session_id=f"pepper_{user_id}_{datetime.utcnow().timestamp()}",
-                system_message=PEPPER_SYSTEM_PROMPT
+                system_message=tuned_system_prompt
             ).with_model("openai", "gpt-4.1")
             
             user_message = UserMessage(
@@ -384,6 +400,47 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
         
         result = await ai_checkins_collection.insert_one(checkin_doc)
         checkin_doc["id"] = str(result.inserted_id)
+        
+        # Auto-sync to today's daily entry so the Today screen reflects PEPPER's plan
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        salt_check_items = ai_response.get("salt_check", [])
+        
+        # Pick action items by keyword heuristic (work/money/life)
+        work_action = None
+        money_action = ai_response.get("money_check")
+        life_admin_action = None
+        for item in salt_check_items:
+            item_lower = item.lower()
+            if not work_action and any(kw in item_lower for kw in ["work", "client", "email", "draft", "project", "send", "meeting", "boss"]):
+                work_action = item
+            elif not life_admin_action and not any(kw in item_lower for kw in ["work", "client", "money", "rent", "pay", "bill", "eat", "water", "sleep", "shower", "body"]):
+                life_admin_action = item
+        
+        daily_entry_data = {
+            "user_id": user_id,
+            "date": today_str,
+            "top_priorities": salt_check_items[:3],
+            "next_sane_step": next_sane_step,
+            "money_action": money_action,
+            "work_action": work_action,
+            "life_admin_action": life_admin_action,
+            "medication_note": ai_response.get("body_check"),
+            "updated_at": datetime.utcnow(),
+        }
+        
+        existing_entry = await daily_entries_collection.find_one({"user_id": user_id, "date": today_str})
+        if existing_entry:
+            # Preserve checkbox state on update
+            await daily_entries_collection.update_one(
+                {"_id": existing_entry["_id"]},
+                {"$set": daily_entry_data}
+            )
+        else:
+            daily_entry_data["water_checked"] = False
+            daily_entry_data["food_checked"] = False
+            daily_entry_data["hygiene_checked"] = False
+            daily_entry_data["created_at"] = datetime.utcnow()
+            await daily_entries_collection.insert_one(daily_entry_data)
         
         return AICheckInResponse(**checkin_doc)
         
@@ -648,6 +705,123 @@ async def delete_person_note(note_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Note not found")
     return {"message": "Receipt deleted"}
+
+# ============================================================
+# Voice Transcription (Whisper) endpoint
+# ============================================================
+@app.post("/api/pepper/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Accept an audio file (m4a/mp3/wav/webm) and return Whisper transcription."""
+    try:
+        suffix = os.path.splitext(file.filename or "audio.m4a")[1] or ".m4a"
+        if suffix.lstrip(".").lower() not in ("mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"):
+            suffix = ".m4a"
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+            with open(tmp_path, "rb") as audio_file:
+                result = await stt.transcribe(
+                    file=audio_file,
+                    model="whisper-1",
+                    response_format="json",
+                )
+            
+            # Extract text from result
+            text = ""
+            if hasattr(result, "text"):
+                text = result.text
+            elif isinstance(result, dict):
+                text = result.get("text", "")
+            elif isinstance(result, str):
+                text = result
+            
+            return {"text": text}
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+
+# ============================================================
+# Push Notifications (Emergent-managed via SuprSend relay)
+# ============================================================
+PUSH_BASE_URL = "https://integrations.emergentagent.com"
+PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+
+_push_client = httpx.AsyncClient(
+    base_url=PUSH_BASE_URL,
+    headers={"X-Push-Key": PUSH_KEY},
+    timeout=10.0,
+)
+
+
+class RegisterPushBody(BaseModel):
+    user_id: str
+    platform: str  # "android" | "ios"
+    device_token: str
+
+
+@app.post("/api/register-push", status_code=201)
+async def register_push(body: RegisterPushBody):
+    try:
+        resp = await _push_client.post("/api/v1/push/users/register", json=body.model_dump())
+        if resp.status_code == 401:
+            raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+        if resp.status_code >= 500:
+            raise HTTPException(502, "Push provider unavailable")
+        resp.raise_for_status()
+        return {"status": "registered"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Don't fail the app if push registration fails (e.g. placeholder key in preview)
+        return {"status": "skipped", "reason": str(e)}
+
+
+async def send_push(recipients: List[str], data: dict, idempotency_key: Optional[str] = None) -> None:
+    if not recipients:
+        return
+    if len(recipients) > 100:
+        raise ValueError("max 100 recipients per /trigger call")
+    if "title" not in data or "message" not in data:
+        raise ValueError("data must include title and message")
+    payload: dict = {"recipients": recipients, "data": data}
+    if idempotency_key:
+        payload["$idempotency_key"] = idempotency_key
+    resp = await _push_client.post("/api/v1/push/trigger", json=payload)
+    if resp.status_code == 401:
+        raise HTTPException(500, "EMERGENT_PUSH_KEY missing or invalid")
+    if resp.status_code >= 500:
+        raise HTTPException(502, "Push provider unavailable")
+    resp.raise_for_status()
+
+
+class TestPushBody(BaseModel):
+    user_id: str
+    title: str = "Salt Check"
+    message: str = "New day, same chaos. Let's sort it."
+
+
+@app.post("/api/send-test-push")
+async def send_test_push(body: TestPushBody):
+    """Manually trigger a push to verify wiring after deployment."""
+    try:
+        await send_push(
+            recipients=[body.user_id],
+            data={"title": body.title, "message": body.message},
+        )
+        return {"status": "sent"}
+    except Exception as e:
+        return {"status": "failed", "reason": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn

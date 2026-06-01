@@ -55,6 +55,13 @@ export default function MoreScreen() {
         onPress={() => router.push('/pepper-history')}
       />
 
+      <MenuItem
+        title="Settings"
+        subtitle="Spice level, reminders, danger zone"
+        icon="settings"
+        onPress={() => router.push('/settings')}
+      />
+
       <View style={styles.section}>
         <Text style={styles.sectionLabel}>ABOUT</Text>
         <Card variant="default">

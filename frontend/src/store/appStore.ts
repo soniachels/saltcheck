@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import { storage } from '../utils/storage';
 
 interface User {
   id: string;
@@ -9,29 +11,98 @@ interface User {
   timezone: string;
 }
 
+interface NotificationSettings {
+  enabled: boolean;
+  morning_enabled: boolean;
+  morning_hour: number;
+  morning_minute: number;
+  evening_enabled: boolean;
+  evening_hour: number;
+  evening_minute: number;
+}
+
 interface AppState {
   user: User | null;
   currentUserId: string;
   isOnboarded: boolean;
   receiptsUnlocked: boolean;
-  
+  pepperSpiceLevel: 'mild' | 'medium' | 'extra_spicy';
+  nickname: string;
+  notifications: NotificationSettings;
+
   // Actions
   setUser: (user: User | null) => void;
   setCurrentUserId: (id: string) => void;
   setIsOnboarded: (value: boolean) => void;
   setReceiptsUnlocked: (value: boolean) => void;
+  setPepperSpiceLevel: (level: 'mild' | 'medium' | 'extra_spicy') => void;
+  setNickname: (n: string) => void;
+  setNotifications: (n: Partial<NotificationSettings>) => void;
+  resetOnboarding: () => void;
   logout: () => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
-  user: null,
-  currentUserId: 'default_user', // For MVP, using a default user
-  isOnboarded: false,
-  receiptsUnlocked: false,
-  
-  setUser: (user) => set({ user }),
-  setCurrentUserId: (id) => set({ currentUserId: id }),
-  setIsOnboarded: (value) => set({ isOnboarded: value }),
-  setReceiptsUnlocked: (value) => set({ receiptsUnlocked: value }),
-  logout: () => set({ user: null, currentUserId: 'default_user', receiptsUnlocked: false }),
-}));
+// Bridge our `storage` util to Zustand's persist API
+const zustandStorage = {
+  getItem: async (name: string) => {
+    const v = await storage.getItem<string>(name, '');
+    return typeof v === 'string' && v.length > 0 ? v : null;
+  },
+  setItem: async (name: string, value: string) => {
+    await storage.setItem(name, value);
+  },
+  removeItem: async (name: string) => {
+    await storage.removeItem(name);
+  },
+};
+
+const defaultNotifications: NotificationSettings = {
+  enabled: false,
+  morning_enabled: true,
+  morning_hour: 9,
+  morning_minute: 0,
+  evening_enabled: true,
+  evening_hour: 21,
+  evening_minute: 0,
+};
+
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
+      user: null,
+      currentUserId: 'default_user',
+      isOnboarded: false,
+      receiptsUnlocked: false,
+      pepperSpiceLevel: 'medium',
+      nickname: '',
+      notifications: defaultNotifications,
+
+      setUser: (user) => set({ user }),
+      setCurrentUserId: (id) => set({ currentUserId: id }),
+      setIsOnboarded: (value) => set({ isOnboarded: value }),
+      setReceiptsUnlocked: (value) => set({ receiptsUnlocked: value }),
+      setPepperSpiceLevel: (level) => set({ pepperSpiceLevel: level }),
+      setNickname: (n) => set({ nickname: n }),
+      setNotifications: (n) =>
+        set((state) => ({ notifications: { ...state.notifications, ...n } })),
+      resetOnboarding: () => set({ isOnboarded: false }),
+      logout: () =>
+        set({
+          user: null,
+          currentUserId: 'default_user',
+          receiptsUnlocked: false,
+          isOnboarded: false,
+        }),
+    }),
+    {
+      name: 'saltcheck-app-state',
+      storage: createJSONStorage(() => zustandStorage),
+      partialize: (state) => ({
+        isOnboarded: state.isOnboarded,
+        pepperSpiceLevel: state.pepperSpiceLevel,
+        nickname: state.nickname,
+        notifications: state.notifications,
+      }),
+    }
+  )
+);

@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Colors, Typography, Layout, Spacing, BorderRadius } from '../../src/theme';
 import { Card } from '../../src/components/Card';
 import { Ionicons } from '@expo/vector-icons';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 
 export default function TodayScreen() {
   const [todayEntry, setTodayEntry] = useState<any>(null);
@@ -21,13 +21,16 @@ export default function TodayScreen() {
       setTodayEntry(response.data);
     } catch (error) {
       // No entry for today yet
-      console.log('No entry for today');
+      setTodayEntry(null);
     }
   };
 
-  useEffect(() => {
-    loadTodayEntry();
-  }, []);
+  // Refetch every time the screen gains focus (e.g. after PEPPER check-in)
+  useFocusEffect(
+    useCallback(() => {
+      loadTodayEntry();
+    }, [])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
