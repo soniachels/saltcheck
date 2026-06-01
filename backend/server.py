@@ -151,9 +151,12 @@ class MoneyEntryCreate(BaseModel):
     urgent_payments: Optional[str] = None
     payment_followups: Optional[str] = None
     afford_note: Optional[str] = None
+    # Detailed bills + income lists
+    bills: Optional[List[dict]] = None  # [{label, amount, due_date, recurring: "monthly"|"weekly"|null, paid: bool}]
+    income: Optional[List[dict]] = None  # [{label, amount, expected_date, recurring: ...}]
     # Doom Spending + Soft Saving
-    doom_spends: Optional[List[dict]] = None   # [{label, amount, regret: 1-5, date}]
-    soft_savings: Optional[List[dict]] = None  # [{label, amount, date}]
+    doom_spends: Optional[List[dict]] = None
+    soft_savings: Optional[List[dict]] = None
 
 class MoneyEntryResponse(BaseModel):
     id: str
@@ -167,6 +170,8 @@ class MoneyEntryResponse(BaseModel):
     urgent_payments: Optional[str]
     payment_followups: Optional[str]
     afford_note: Optional[str]
+    bills: Optional[List[dict]] = None
+    income: Optional[List[dict]] = None
     doom_spends: Optional[List[dict]] = None
     soft_savings: Optional[List[dict]] = None
     created_at: datetime
@@ -215,6 +220,7 @@ class BodyLogResponse(BaseModel):
 
 class PersonNoteCreate(BaseModel):
     person_name: str
+    relationship_category: Optional[Literal["family", "romantic", "friendship", "professional", "blurry"]] = None
     relationship_context: Optional[str] = None
     promised: Optional[str] = None
     asked_for: Optional[str] = None
@@ -227,6 +233,7 @@ class PersonNoteResponse(BaseModel):
     id: str
     user_id: str
     person_name: str
+    relationship_category: Optional[str] = None
     relationship_context: Optional[str]
     promised: Optional[str]
     asked_for: Optional[str]
@@ -875,9 +882,6 @@ async def send_test_push(body: TestPushBody):
         return {"status": "failed", "reason": str(e)}
 
 
-# ============================================================
-# PEPPER Advice — People (Receipts) and Body
-# ============================================================
 class PersonAdviceRequest(BaseModel):
     person_note_id: Optional[str] = None
     person_name: str
@@ -1032,6 +1036,87 @@ async def advise_body(req: BodyAdviceRequest, user_id: str = "default_user"):
         return advice
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PEPPER is checking on you: {str(e)}")
+
+
+# ============================================================
+# PEPPER Receipt Vision — analyze conversation screenshots
+# ============================================================
+import base64
+
+@app.post("/api/pepper/analyze-receipt")
+async def analyze_receipt(
+    file: UploadFile = File(...),
+    user_id: str = Form("default_user"),
+    person_name: str = Form(""),
+    relationship_category: str = Form(""),
+    spice_level: str = Form("medium"),
+):
+    """PEPPER reads a screenshot of a conversation and gives a vibe read."""
+    try:
+        content = await file.read()
+        if len(content) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Screenshot too big (max 8MB)")
+        ext = (file.filename or "img.png").split(".")[-1].lower()
+        mime = "image/png" if ext == "png" else "image/jpeg"
+        b64 = base64.b64encode(content).decode("utf-8")
+        
+        spice_modifier = {
+            "mild": "Tone down sass. Warm.",
+            "medium": "Brand voice.",
+            "extra_spicy": "Max protective energy.",
+        }.get(spice_level, "")
+        ctx_lines = []
+        if person_name: ctx_lines.append(f"Person: {person_name}")
+        if relationship_category: ctx_lines.append(f"Relationship: {relationship_category}")
+        context_str = "\n".join(ctx_lines) if ctx_lines else "Unknown person."
+        
+        system_prompt = f"""You are PEPPER. Read this screenshot of a conversation and give a protective read. {spice_modifier}
+
+Output JSON only:
+{{
+  "tldr": "One line on what's happening",
+  "the_red_flags": [],
+  "the_green_flags": [],
+  "what_they_actually_want": "Between the lines",
+  "the_move": "What the user should do/say",
+  "suggested_reply": "Actual text to send, or null",
+  "verdict": "trust | caution | cut"
+}}"""
+
+        from emergentintegrations.llm.chat import ImageContent
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"vision_{user_id}_{datetime.utcnow().timestamp()}",
+            system_message=system_prompt,
+        ).with_model("openai", "gpt-4o")
+        
+        msg = UserMessage(
+            text=f"{context_str}\n\nRead this screenshot.",
+            file_contents=[ImageContent(image_base64=b64)],
+        )
+        response = await chat.send_message(msg)
+        
+        import json
+        try:
+            advice = json.loads(response)
+        except Exception:
+            cleaned = response.strip().lstrip("`").rstrip("`")
+            if cleaned.startswith("json"): cleaned = cleaned[4:].strip()
+            try:
+                advice = json.loads(cleaned)
+            except Exception:
+                advice = {
+                    "tldr": "Couldn't read it cleanly.",
+                    "the_red_flags": [], "the_green_flags": [],
+                    "what_they_actually_want": "unclear",
+                    "the_move": "Re-upload a clearer screenshot.",
+                    "suggested_reply": None, "verdict": "caution",
+                }
+        return advice
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PEPPER couldn't read it: {str(e)}")
 
 
 if __name__ == "__main__":
