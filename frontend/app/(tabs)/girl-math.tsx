@@ -107,10 +107,43 @@ export default function GirlMathScreen() {
   // Itemized bills/income
   const allBills = (entry?.bills || []) as any[];
   const allIncome = (entry?.income || []) as any[];
+  const receivedIncome = allIncome.filter((i: any) => i.received);
+  const pendingIncome = allIncome.filter((i: any) => !i.received);
   const unpaidBills = allBills.filter((b) => !b.paid);
   const paidBills = allBills.filter((b) => b.paid);
   const billsTotal = unpaidBills.reduce((s, b) => s + (b.amount || 0), 0);
-  const incomeTotal = allIncome.reduce((s, b) => s + (b.amount || 0), 0);
+  const incomeTotal = pendingIncome.reduce((s, b) => s + (b.amount || 0), 0);
+
+  // Sort helpers — bills by due date asc (overdue → soonest → later → no-date last)
+  const sortBillsByDate = (arr: any[]) => arr.slice().sort((a, b) => {
+    const ad = a.due_date || '9999-12-31';
+    const bd = b.due_date || '9999-12-31';
+    return ad.localeCompare(bd);
+  });
+  const sortIncomeByDate = (arr: any[]) => arr.slice().sort((a, b) => {
+    const ad = a.expected_date || '9999-12-31';
+    const bd = b.expected_date || '9999-12-31';
+    return ad.localeCompare(bd);
+  });
+  // Doom by regret level desc (huge → none)
+  const sortDoomByRegret = (arr: any[]) => arr.slice().sort((a, b) => (b.regret || 0) - (a.regret || 0));
+
+  const sortedUnpaidBills = sortBillsByDate(unpaidBills);
+  const sortedPendingIncome = sortIncomeByDate(pendingIncome);
+  const sortedDoom = sortDoomByRegret(weeklyDoom);
+
+  // See-all toggles
+  const [showAllBills, setShowAllBills] = useState(false);
+  const [showAllIncome, setShowAllIncome] = useState(false);
+  const [showAllDoom, setShowAllDoom] = useState(false);
+  const [showAllSoft, setShowAllSoft] = useState(false);
+  const [showReceivedIncome, setShowReceivedIncome] = useState(false);
+
+  const DEFAULT_VISIBLE = 5;
+  const visibleBills = showAllBills ? sortedUnpaidBills : sortedUnpaidBills.slice(0, DEFAULT_VISIBLE);
+  const visibleIncome = showAllIncome ? sortedPendingIncome : sortedPendingIncome.slice(0, DEFAULT_VISIBLE);
+  const visibleDoom = showAllDoom ? sortedDoom : sortedDoom.slice(0, DEFAULT_VISIBLE);
+  const visibleSoft = showAllSoft ? weeklySoft : weeklySoft.slice(0, DEFAULT_VISIBLE);
 
   // Floor = cash on hand − unpaid bills − this-week doom
   const cash = entry?.cash_available || 0;
@@ -223,6 +256,12 @@ export default function GirlMathScreen() {
     const income = allIncome.filter((_, i) => i !== idx);
     await upsertField({ income });
     setIncomeModal({ open: false, editingIdx: null });
+  };
+
+  const toggleIncomeReceived = async (idx: number) => {
+    const income = [...allIncome];
+    income[idx] = { ...income[idx], received: !income[idx].received };
+    await upsertField({ income });
   };
 
   const saveDoom = async () => {
@@ -345,8 +384,8 @@ export default function GirlMathScreen() {
 
             {/* Itemized Bills */}
             <Text style={styles.sectionLabel}>BILLS.</Text>
-            <Text style={styles.sectionHint}>tap to edit. swipe past paid ones.</Text>
-            {unpaidBills.map((b, i) => {
+            <Text style={styles.sectionHint}>sorted by due date. overdue at the top.</Text>
+            {visibleBills.map((b: any) => {
               const idx = allBills.indexOf(b);
               const days = b.due_date ? daysFromToday(b.due_date) : null;
               const overdue = days != null && days < 0;
@@ -375,6 +414,14 @@ export default function GirlMathScreen() {
                 />
               );
             })}
+            {sortedUnpaidBills.length > DEFAULT_VISIBLE && (
+              <TouchableOpacity style={styles.seeAllBtn} onPress={() => setShowAllBills((v) => !v)}>
+                <Text style={styles.seeAllText}>
+                  {showAllBills ? `SHOW LESS` : `SEE ALL · ${sortedUnpaidBills.length}`}
+                </Text>
+                <Ionicons name={showAllBills ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+              </TouchableOpacity>
+            )}
             <CategoryCard
               title="+ ADD BILL"
               subtitle={unpaidBills.length > 0 ? `${formatMoney(billsTotal, currency)} unpaid · ${unpaidBills.length} item${unpaidBills.length === 1 ? '' : 's'}` : 'rent, utilities, subscriptions...'}
@@ -403,8 +450,9 @@ export default function GirlMathScreen() {
 
             {/* Itemized Income */}
             <Text style={styles.sectionLabel}>INCOMING.</Text>
-            <Text style={styles.sectionHint}>money on its way. invoices, paychecks, refunds.</Text>
-            {allIncome.map((it, idx) => {
+            <Text style={styles.sectionHint}>sorted by arrival date. mark received when it lands.</Text>
+            {visibleIncome.map((it: any) => {
+              const idx = allIncome.indexOf(it);
               const days = it.expected_date ? daysFromToday(it.expected_date) : null;
               return (
                 <CategoryCard
@@ -422,27 +470,60 @@ export default function GirlMathScreen() {
                   icon="trending-up"
                   variant="lime"
                   onPress={() => openIncomeEditor(idx)}
+                  rightSlot={
+                    <TouchableOpacity onPress={() => toggleIncomeReceived(idx)} style={styles.receivedBtn}>
+                      <Text style={styles.receivedBtnText}>RECEIVED</Text>
+                    </TouchableOpacity>
+                  }
                 />
               );
             })}
+            {sortedPendingIncome.length > DEFAULT_VISIBLE && (
+              <TouchableOpacity style={styles.seeAllBtn} onPress={() => setShowAllIncome((v) => !v)}>
+                <Text style={styles.seeAllText}>
+                  {showAllIncome ? `SHOW LESS` : `SEE ALL · ${sortedPendingIncome.length}`}
+                </Text>
+                <Ionicons name={showAllIncome ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+              </TouchableOpacity>
+            )}
             <CategoryCard
               title="+ ADD INCOMING"
-              subtitle={allIncome.length > 0 ? `${formatMoney(incomeTotal, currency)} expected` : 'invoice, salary, refund...'}
+              subtitle={pendingIncome.length > 0 ? `${formatMoney(incomeTotal, currency)} expected` : 'invoice, salary, refund...'}
               icon="add-circle"
               variant="lime"
               onPress={() => openIncomeEditor(null)}
             />
+            {receivedIncome.length > 0 && (
+              <TouchableOpacity onPress={() => setShowReceivedIncome((v) => !v)} style={{ marginTop: Spacing.xs }}>
+                <Text style={[styles.sectionHint, { color: Colors.pickleLime }]}>
+                  {showReceivedIncome ? '▾' : '▸'} ✓ {receivedIncome.length} received (tap)
+                </Text>
+              </TouchableOpacity>
+            )}
+            {showReceivedIncome && receivedIncome.map((it: any) => {
+              const idx = allIncome.indexOf(it);
+              return (
+                <TouchableOpacity
+                  key={`recv-${idx}`}
+                  style={styles.paidRow}
+                  onPress={() => toggleIncomeReceived(idx)}
+                >
+                  <Ionicons name="checkmark-circle" size={16} color={Colors.pickleLime} />
+                  <Text style={styles.paidRowText}>{it.label} · {formatMoney(it.amount, currency)}</Text>
+                </TouchableOpacity>
+              );
+            })}
 
             {/* Doom Spending */}
             <Text style={styles.sectionLabel}>DOOM SPENDING.</Text>
-            <Text style={styles.sectionHint}>impulse buys & 3am amazon. this week only — auto-resets monday.</Text>
-            {weeklyDoom.map((d: any, i: number) => (
+            <Text style={styles.sectionHint}>sorted by regret. this week only — auto-resets monday.</Text>
+            {visibleDoom.map((d: any, i: number) => (
               <CategoryCard
                 key={i}
                 title={d.label}
                 subtitle={`${formatMoney(d.amount, currency)} · ${REGRET_LABELS[d.regret] || 'medium'} regret`}
                 icon="flame"
-                variant={d.regret >= 3 ? 'red' : 'dark'}
+                variant={d.regret >= 3 ? 'red' : d.regret >= 2 ? 'lilac' : 'dark'}
                 rightSlot={
                   <TouchableOpacity onPress={() => removeDoom(allDoom.indexOf(d))}>
                     <Ionicons name="close-circle" size={22} color={Colors.steelBlueGrey} />
@@ -450,12 +531,20 @@ export default function GirlMathScreen() {
                 }
               />
             ))}
+            {sortedDoom.length > DEFAULT_VISIBLE && (
+              <TouchableOpacity style={styles.seeAllBtn} onPress={() => setShowAllDoom((v) => !v)}>
+                <Text style={styles.seeAllText}>
+                  {showAllDoom ? `SHOW LESS` : `SEE ALL · ${sortedDoom.length}`}
+                </Text>
+                <Ionicons name={showAllDoom ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+              </TouchableOpacity>
+            )}
             <CategoryCard title="+ LOG A DOOM SPEND" subtitle={totalDoom > 0 ? `${formatMoney(totalDoom, currency)} this week` : 'no shame. just data.'} icon="add-circle" variant="red" onPress={() => setDoomModal(true)} />
 
             {/* Soft Saving */}
             <Text style={styles.sectionLabel}>SOFT SAVING.</Text>
             <Text style={styles.sectionHint}>small wins. spare change. this week only.</Text>
-            {weeklySoft.map((s: any, i: number) => (
+            {visibleSoft.map((s: any, i: number) => (
               <CategoryCard
                 key={i}
                 title={s.label}
@@ -469,6 +558,14 @@ export default function GirlMathScreen() {
                 }
               />
             ))}
+            {weeklySoft.length > DEFAULT_VISIBLE && (
+              <TouchableOpacity style={styles.seeAllBtn} onPress={() => setShowAllSoft((v) => !v)}>
+                <Text style={styles.seeAllText}>
+                  {showAllSoft ? `SHOW LESS` : `SEE ALL · ${weeklySoft.length}`}
+                </Text>
+                <Ionicons name={showAllSoft ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+              </TouchableOpacity>
+            )}
             <CategoryCard title="+ STASH A SMALL WIN" subtitle={totalSoft > 0 ? `${formatMoney(totalSoft, currency)} stashed this week` : 'every bit counts.'} icon="add-circle" variant="lime" onPress={() => setSoftModal(true)} />
 
             {/* PEPPER analysis */}
@@ -693,5 +790,35 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.sm,
     color: Colors.textSubtle,
     textDecorationLine: 'line-through',
+  },
+  receivedBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.pickleLime,
+  },
+  receivedBtnText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.inkBlack,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  seeAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 10,
+    marginVertical: Spacing.xs,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  seeAllText: {
+    color: Colors.text,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
 });

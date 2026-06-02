@@ -4,27 +4,15 @@ import { View } from 'react-native';
 import { Colors, Typography } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { PepperFab } from '../../src/components/PepperFab';
+import { SideMenu } from '../../src/components/SideMenu';
 
 export default function TabLayout() {
   return (
     <View style={{ flex: 1, backgroundColor: Colors.background }}>
       <Tabs
+        tabBar={() => null}
         screenOptions={{
-          tabBarActiveTintColor: Colors.brightRed,
-          tabBarInactiveTintColor: Colors.steelBlueGrey,
-          tabBarStyle: {
-            backgroundColor: Colors.charcoal,
-            borderTopColor: Colors.border,
-            borderTopWidth: 1,
-            height: 64,
-            paddingBottom: 8,
-            paddingTop: 6,
-          },
-          tabBarLabelStyle: {
-            fontSize: Typography.fontSize.xs,
-            fontWeight: '800',
-            letterSpacing: 1,
-          },
+          tabBarStyle: { display: 'none', height: 0 },
           headerStyle: { backgroundColor: Colors.background },
           headerTintColor: Colors.text,
           headerTitleStyle: {
@@ -89,6 +77,7 @@ export default function TabLayout() {
           options={{ href: null, headerShown: false }}
         />
       </Tabs>
+      <SideMenu />
       <PepperFab />
     </View>
   );
