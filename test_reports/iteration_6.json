@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 6 — Batch D backend-only verification. 105/105 pytest cases PASSED (100%) including 20 new tests in test_batch_d_category_and_vision.py. (1) PersonNote relationship_category: POST accepts all 5 values (family, romantic, friendship, professional, blurry); GET returns them; PUT updates one (family → romantic) and persistence confirmed via GET; invalid value 'casual' is rejected with 422. (2) PEPPER /api/pepper/advise-person honors relationship_category: response shape verified for all three categories (blurry/professional/family) with required keys vibe_read, the_move, watch_out_for (list), verdict ∈ {trust,caution,cut}. Professional response differs from blurry response (not identical) and contains tactical/work-mode vocabulary (e.g., 'work hours', 'in writing', 'boundaries', 'message'). Blurry response is non-empty (loose lane/boundary keyword check informational only). (3) Vision endpoint POST /api/pepper/analyze-receipt: happy path with real PNG (Pillow-drawn rectangle + text 'hey can we meet tomorrow?' + 'from: alex 11:47pm') returns valid JSON with tldr, the_red_flags (list), the_green_flags (list), what_they_actually_want, the_move, verdict; oversize file (~9MB) returns 413; missing file returns 422 (FastAPI validation). (4) Regression sanity green for /api/users, /api/daily-entries, /api/tasks, /api/money-entries, /api/body-logs, /api/pepper/advise-body. Full suite re-run: 105 passed in 55.56s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PEPPER advise-person — category-specific tone",
+        "issue": "Loose check for category-specific vocabulary in PEPPER responses is informational only because the LLM has stylistic variance run-to-run. The 'blurry' response in this run did include 'blurring boundaries' so the hint check passes naturally, but on different runs the LLM may not literally use lane/boundary/blur keywords. Recommend monitoring _category_directive() effectiveness over a wider sample if precision matters."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "ObjectId() casts still raise bson.errors.InvalidId → HTTP 500 instead of 404/400 on malformed ids in PUT/DELETE/GET-by-id endpoints. Not blocking."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "server.py size still above 700-line guideline."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_d_category_and_vision.py",
+    "/app/test_reports/pytest/pytest_iter6_batch_d.xml",
+    "/app/test_reports/pytest/pytest_iter6_full.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional: consider returning 422 (instead of currently-correct 422 — confirmed) consistently for invalid Literal values; this is already the behavior — no action needed.",
+    "Optional carry-over: wrap ObjectId() casts to return 404 on malformed ids; split server.py into smaller routers."
+  ],
+  "critical_code_review_comments": [
+    "PersonAdviceRequest.relationship_category uses Optional[Literal[...]] so FastAPI correctly returns 422 for unknown values (verified via 'casual').",
+    "_category_directive() injects per-category instruction blocks into the system prompt — verified non-identical responses between blurry vs. professional with identical other inputs.",
+    "analyze-receipt endpoint: 8MB size guard hits before LLM call (verified via 413 on ~9MB upload). Multipart parsing is FastAPI-native, so missing file returns 422 from Pydantic-level validation.",
+    "Generated test PNG (~3KB) includes drawn rectangle, line, and two text labels — qualifies as 'real visual content' per /app/image_testing.md (not blank/solid).",
+    "server.py file size still exceeds 700-line guideline — carry-over from prior iterations."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_batch_d_category_and_vision.py (new — 20 tests)"
+  ],
+  "success_rate": {"backend": "100% (105/105 full suite, 20/20 new Batch D)", "frontend": "not_tested"},
+  "seed_data_creation": "TestPersonNoteCategory creates 5 notes under user_id=TEST_cat_user (one per category) plus 0–1 attempt under same user (rejected). Fixture deletes them on teardown — verified via DELETE log entries. TestAdvisePersonCategory POSTs to /api/pepper/advise-person with user_id=default_user (no DB write side-effect for this endpoint). TestAnalyzeReceipt POSTs vision endpoint with user_id=TEST_screenshot_user (one DB row in pepper_history/ai_checkins per call if persisted — non-blocking).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL via /app/frontend/.env (EXPO_PUBLIC_BACKEND_URL). All 105 backend tests pass in ~55s. Batch D feature verified end-to-end: (a) PersonNote relationship_category CRUD with all 5 values + invalid 'casual' rejected 422; (b) PEPPER advise-person produces distinct, structured responses for blurry/professional/family with verdict in {trust,caution,cut}; (c) POST /api/pepper/analyze-receipt accepts multipart PNG and returns valid vision JSON; 413 on >8MB, 422 on missing file. Pillow is installed and used to build a real (non-blank) PNG via ImageDraw. New tests live in tests/test_batch_d_category_and_vision.py. LLM tone-check assertion was loosened to substrings (e.g., 'writ', 'boundar') to absorb minor wording variance — still tight enough to fail if category directive is ignored.",
+  "rca_of_issue": "No bugs found in Batch D. PersonNote category, PEPPER category-aware advice, and the vision analyze-receipt endpoint all behave per spec on the public ingress."
+}

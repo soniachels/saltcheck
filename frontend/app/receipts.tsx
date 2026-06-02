@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Stack } from 'expo-router';
 import * as LocalAuthentication from 'expo-local-authentication';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import {
   Colors,
@@ -23,10 +24,12 @@ import { CategoryCard } from '../src/components/CategoryCard';
 import { PepperBubble } from '../src/components/PepperBubble';
 import { Button } from '../src/components/Button';
 import { Input } from '../src/components/Input';
+import { ChipPicker } from '../src/components/ChipPicker';
 import apiClient from '../src/services/api';
 import { useAppStore } from '../src/store/appStore';
 
 type Verdict = 'trust' | 'caution' | 'cut';
+type Category = 'family' | 'romantic' | 'friendship' | 'professional' | 'blurry';
 
 interface PersonAdvice {
   vibe_read: string;
@@ -36,11 +39,36 @@ interface PersonAdvice {
   verdict: Verdict;
 }
 
+interface ScreenshotRead {
+  tldr: string;
+  the_red_flags: string[];
+  the_green_flags: string[];
+  what_they_actually_want: string;
+  the_move: string;
+  suggested_reply?: string | null;
+  verdict: Verdict;
+}
+
 const VERDICT_MAP: Record<Verdict, { color: string; label: string }> = {
   trust: { color: Colors.verdictTrust, label: 'TRUST' },
   caution: { color: Colors.verdictCaution, label: 'CAUTION' },
   cut: { color: Colors.verdictCut, label: 'CUT' },
 };
+
+const CATEGORY_META: Record<Category, {
+  label: string;
+  icon: any;
+  variant: 'red' | 'lime' | 'lilac' | 'dark';
+  hint: string;
+}> = {
+  family: { label: 'FAMILY', icon: 'home', variant: 'lilac', hint: 'loyalty + boundaries' },
+  romantic: { label: 'ROMANTIC', icon: 'heart', variant: 'red', hint: 'eyes wide open' },
+  friendship: { label: 'FRIENDSHIP', icon: 'people', variant: 'lime', hint: 'check the balance' },
+  professional: { label: 'PROFESSIONAL', icon: 'briefcase', variant: 'dark', hint: 'paper trails only' },
+  blurry: { label: 'BLURRY', icon: 'help-circle', variant: 'red', hint: 'pick a lane' },
+};
+
+const CATEGORY_OPTIONS = ['family', 'romantic', 'friendship', 'professional', 'blurry'] as const;
 
 export default function ReceiptsScreen() {
   const [receipts, setReceipts] = useState<any[]>([]);
@@ -49,8 +77,12 @@ export default function ReceiptsScreen() {
   const [advice, setAdvice] = useState<PersonAdvice | null>(null);
   const [adviceLoading, setAdviceLoading] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
+  const [screenshotRead, setScreenshotRead] = useState<ScreenshotRead | null>(null);
+  const [screenshotLoading, setScreenshotLoading] = useState(false);
+  const [activeCategory, setActiveCategory] = useState<Category | 'all'>('all');
   const [formData, setFormData] = useState({
     person_name: '',
+    relationship_category: '' as Category | '',
     relationship_context: '',
     promised: '',
     asked_for: '',
@@ -107,6 +139,7 @@ export default function ReceiptsScreen() {
   const askPepper = async (receipt: any) => {
     setActiveReceipt(receipt);
     setAdvice(null);
+    setScreenshotRead(null);
     setAdviceLoading(true);
     try {
       const res = await apiClient.post(
@@ -114,6 +147,7 @@ export default function ReceiptsScreen() {
         {
           person_note_id: receipt.id,
           person_name: receipt.person_name,
+          relationship_category: receipt.relationship_category,
           relationship_context: receipt.relationship_context,
           promised: receipt.promised,
           asked_for: receipt.asked_for,
@@ -131,10 +165,69 @@ export default function ReceiptsScreen() {
     }
   };
 
+  const dropScreenshot = async () => {
+    if (!activeReceipt) return;
+    try {
+      // Request permission
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        if (!perm.canAskAgain) {
+          Alert.alert(
+            'Photo access needed',
+            'PEPPER needs to see the screenshot to read it. Open settings to enable.',
+            [{ text: 'Cancel', style: 'cancel' }, { text: 'OPEN SETTINGS', onPress: () => {
+              // @ts-ignore
+              if (typeof require !== 'undefined') {
+                try { require('react-native').Linking.openSettings(); } catch {}
+              }
+            }}]
+          );
+          return;
+        }
+        Alert.alert('Photo access', 'PEPPER needs to see the screenshot to read it.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.6,
+        base64: false,
+      });
+      if (result.canceled || !result.assets || !result.assets[0]) return;
+
+      const asset = result.assets[0];
+      setScreenshotLoading(true);
+      setScreenshotRead(null);
+
+      // Build form data
+      const form = new FormData();
+      // React Native FormData file format
+      const filename = asset.fileName || `screenshot.${(asset.uri.split('.').pop() || 'jpg').toLowerCase()}`;
+      const type = asset.mimeType || 'image/jpeg';
+      // @ts-ignore — RN FormData accepts {uri, name, type}
+      form.append('file', { uri: asset.uri, name: filename, type });
+      form.append('user_id', currentUserId);
+      form.append('person_name', activeReceipt.person_name || '');
+      form.append('relationship_category', activeReceipt.relationship_category || '');
+      form.append('spice_level', pepperSpiceLevel);
+
+      const res = await apiClient.post('/pepper/analyze-receipt', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
+      });
+      setScreenshotRead(res.data);
+    } catch (e: any) {
+      console.error('screenshot analyze err', e);
+      Alert.alert("PEPPER couldn't read that", 'Try another shot or one with clearer text.');
+    } finally {
+      setScreenshotLoading(false);
+    }
+  };
+
   const openEditor = (receipt?: any) => {
     if (receipt) {
       setFormData({
         person_name: receipt.person_name,
+        relationship_category: (receipt.relationship_category as Category) || '',
         relationship_context: receipt.relationship_context || '',
         promised: receipt.promised || '',
         asked_for: receipt.asked_for || '',
@@ -146,6 +239,7 @@ export default function ReceiptsScreen() {
     } else {
       setFormData({
         person_name: '',
+        relationship_category: '',
         relationship_context: '',
         promised: '',
         asked_for: '',
@@ -156,6 +250,7 @@ export default function ReceiptsScreen() {
       setActiveReceipt(null);
     }
     setAdvice(null);
+    setScreenshotRead(null);
     setEditorVisible(true);
   };
 
@@ -165,7 +260,8 @@ export default function ReceiptsScreen() {
       return;
     }
     try {
-      const payload = { ...formData, locked: true };
+      const payload: any = { ...formData, locked: true };
+      if (!payload.relationship_category) delete payload.relationship_category;
       if (activeReceipt) {
         await apiClient.put(`/person-notes/${activeReceipt.id}`, payload);
       } else {
@@ -175,6 +271,7 @@ export default function ReceiptsScreen() {
       setEditorVisible(false);
       setActiveReceipt(null);
       setAdvice(null);
+      setScreenshotRead(null);
       loadReceipts();
     } catch (e) {
       Alert.alert('Hiccup', 'Could not save. Try again.');
@@ -246,31 +343,92 @@ export default function ReceiptsScreen() {
           <Text style={styles.hero}>RECEIPTS</Text>
           <Text style={styles.heroSub}>trust no one. remember everything.</Text>
 
+          {/* Category filter chips */}
+          {receipts.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+              style={{ marginVertical: Spacing.md }}
+            >
+              <TouchableOpacity
+                style={[styles.filterChip, activeCategory === 'all' && styles.filterChipActive]}
+                onPress={() => setActiveCategory('all')}
+              >
+                <Text style={[styles.filterText, activeCategory === 'all' && styles.filterTextActive]}>
+                  ALL · {receipts.length}
+                </Text>
+              </TouchableOpacity>
+              {CATEGORY_OPTIONS.map((cat) => {
+                const count = receipts.filter((r) => r.relationship_category === cat).length;
+                if (count === 0) return null;
+                const meta = CATEGORY_META[cat];
+                const active = activeCategory === cat;
+                return (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[styles.filterChip, active && styles.filterChipActive]}
+                    onPress={() => setActiveCategory(cat)}
+                  >
+                    <Ionicons name={meta.icon} size={14} color={active ? Colors.inkBlack : Colors.text} />
+                    <Text style={[styles.filterText, active && styles.filterTextActive]}>
+                      {meta.label} · {count}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+              {receipts.filter((r) => !r.relationship_category).length > 0 && (
+                <TouchableOpacity
+                  style={[styles.filterChip, activeCategory === ('uncategorized' as any) && styles.filterChipActive]}
+                  onPress={() => setActiveCategory('uncategorized' as any)}
+                >
+                  <Text style={[styles.filterText, activeCategory === ('uncategorized' as any) && styles.filterTextActive]}>
+                    UNCATEGORIZED · {receipts.filter((r) => !r.relationship_category).length}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          )}
+
           {receipts.length === 0 ? (
             <View style={styles.empty}>
               <Text style={styles.emptyText}>No receipts yet.</Text>
               <Text style={styles.emptySub}>Add someone PEPPER should keep an eye on.</Text>
             </View>
           ) : (
-            receipts.map((receipt) => (
-              <CategoryCard
-                key={receipt.id}
-                title={receipt.person_name}
-                subtitle={receipt.relationship_context || 'no context'}
-                badge="R"
-                variant="dark"
-                onPress={() => askPepper(receipt)}
-                rightSlot={
-                  <Ionicons name="chevron-forward" size={20} color={Colors.steelBlueGrey} />
-                }
-              >
-                {receipt.risk_trust_notes && (
-                  <Text style={styles.cardNote} numberOfLines={2}>
-                    "{receipt.risk_trust_notes}"
-                  </Text>
-                )}
-              </CategoryCard>
-            ))
+            receipts
+              .filter((r) => {
+                if (activeCategory === 'all') return true;
+                if (activeCategory === ('uncategorized' as any)) return !r.relationship_category;
+                return r.relationship_category === activeCategory;
+              })
+              .map((receipt) => {
+                const cat = receipt.relationship_category as Category | undefined;
+                const meta = cat ? CATEGORY_META[cat] : undefined;
+                return (
+                  <CategoryCard
+                    key={receipt.id}
+                    title={receipt.person_name}
+                    subtitle={
+                      meta
+                        ? `${meta.label} · ${receipt.relationship_context || meta.hint}`
+                        : receipt.relationship_context || 'no context'
+                    }
+                    icon={meta?.icon}
+                    variant={meta?.variant || 'dark'}
+                    onPress={() => askPepper(receipt)}
+                    rightSlot={
+                      <Ionicons name="chevron-forward" size={20} color={Colors.steelBlueGrey} />
+                    }
+                  >
+                    {receipt.risk_trust_notes && (
+                      <Text style={styles.cardNote} numberOfLines={2}>
+                        "{receipt.risk_trust_notes}"
+                      </Text>
+                    )}
+                  </CategoryCard>
+                );
+              })
           )}
         </ScrollView>
 
@@ -359,6 +517,85 @@ export default function ReceiptsScreen() {
                   />
                 )}
 
+                {/* Screenshot analyzer */}
+                <Text style={[styles.sectionLabel, { marginTop: Spacing.lg }]}>SCREENSHOT READ</Text>
+                {screenshotLoading ? (
+                  <View style={styles.loadingBubble}>
+                    <ActivityIndicator color={Colors.softSpiceLilac} />
+                    <Text style={styles.loadingText}>PEPPER IS DECODING THE CHAT...</Text>
+                  </View>
+                ) : screenshotRead ? (
+                  <>
+                    <View
+                      style={[
+                        styles.verdictPill,
+                        { backgroundColor: VERDICT_MAP[screenshotRead.verdict].color },
+                      ]}
+                    >
+                      <Text style={styles.verdictText}>{VERDICT_MAP[screenshotRead.verdict].label} · SCREENSHOT</Text>
+                    </View>
+                    <PepperBubble label="* PEPPER" variant="lilac">
+                      {screenshotRead.tldr}
+                    </PepperBubble>
+
+                    {screenshotRead.what_they_actually_want && (
+                      <>
+                        <Text style={styles.sectionLabel}>WHAT THEY ACTUALLY WANT</Text>
+                        <CategoryCard title={screenshotRead.what_they_actually_want} variant="dark" />
+                      </>
+                    )}
+
+                    {screenshotRead.the_red_flags && screenshotRead.the_red_flags.length > 0 && (
+                      <>
+                        <Text style={styles.sectionLabel}>RED FLAGS</Text>
+                        {screenshotRead.the_red_flags.map((item, i) => (
+                          <View key={`r-${i}`} style={styles.flagItem}>
+                            <Ionicons name="warning" size={16} color={Colors.brightRed} />
+                            <Text style={styles.flagText}>{item}</Text>
+                          </View>
+                        ))}
+                      </>
+                    )}
+
+                    {screenshotRead.the_green_flags && screenshotRead.the_green_flags.length > 0 && (
+                      <>
+                        <Text style={styles.sectionLabel}>GREEN FLAGS</Text>
+                        {screenshotRead.the_green_flags.map((item, i) => (
+                          <View key={`g-${i}`} style={styles.flagItem}>
+                            <Ionicons name="checkmark-circle" size={16} color={Colors.pickleLime} />
+                            <Text style={styles.flagText}>{item}</Text>
+                          </View>
+                        ))}
+                      </>
+                    )}
+
+                    <Text style={styles.sectionLabel}>THE MOVE</Text>
+                    <CategoryCard title={screenshotRead.the_move} variant="lime" />
+
+                    {screenshotRead.suggested_reply && (
+                      <>
+                        <Text style={styles.sectionLabel}>SUGGESTED REPLY</Text>
+                        <PepperBubble variant="lilac">{screenshotRead.suggested_reply}</PepperBubble>
+                      </>
+                    )}
+
+                    <Button
+                      title="DROP ANOTHER SCREENSHOT"
+                      onPress={dropScreenshot}
+                      variant="ghost"
+                      style={{ marginTop: Spacing.md }}
+                    />
+                  </>
+                ) : (
+                  <CategoryCard
+                    title="Drop a screenshot"
+                    subtitle="PEPPER reads the convo. Decodes the tone. Suggests a reply."
+                    variant="lilac"
+                    icon="image"
+                    onPress={dropScreenshot}
+                  />
+                )}
+
                 <Button
                   title="CLOSE"
                   onPress={() => setActiveReceipt(null)}
@@ -385,8 +622,21 @@ export default function ReceiptsScreen() {
                   onChangeText={(t) => setFormData({ ...formData, person_name: t })}
                   placeholder="Who is this about?"
                 />
+                <ChipPicker
+                  label="CATEGORY"
+                  options={CATEGORY_OPTIONS as any}
+                  value={formData.relationship_category || ''}
+                  onChange={(v) => setFormData({ ...formData, relationship_category: v as Category })}
+                  variant="red"
+                  testIDPrefix="rel-cat"
+                />
+                {formData.relationship_category && (
+                  <Text style={styles.categoryHint}>
+                    {CATEGORY_META[formData.relationship_category as Category]?.hint}
+                  </Text>
+                )}
                 <Input
-                  label="RELATIONSHIP"
+                  label="RELATIONSHIP CONTEXT"
                   value={formData.relationship_context}
                   onChangeText={(t) => setFormData({ ...formData, relationship_context: t })}
                   placeholder="ex, client, mom, friend..."
@@ -540,4 +790,39 @@ const styles = StyleSheet.create({
   editorContent: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
   editorTitle: { fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 1, marginBottom: Spacing.lg },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
+  // Category filter chips
+  filterRow: { gap: Spacing.sm, paddingRight: Spacing.md },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  filterChipActive: {
+    backgroundColor: Colors.pickleLime,
+    borderColor: Colors.pickleLime,
+  },
+  filterText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  filterTextActive: {
+    color: Colors.inkBlack,
+  },
+  categoryHint: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.brightRed,
+    fontStyle: 'italic',
+    marginTop: -8,
+    marginBottom: Spacing.md,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
 });

@@ -978,6 +978,7 @@ async def send_test_push(body: TestPushBody):
 class PersonAdviceRequest(BaseModel):
     person_note_id: Optional[str] = None
     person_name: str
+    relationship_category: Optional[str] = None
     relationship_context: Optional[str] = None
     promised: Optional[str] = None
     asked_for: Optional[str] = None
@@ -985,6 +986,45 @@ class PersonAdviceRequest(BaseModel):
     follow_up_needed: Optional[str] = None
     risk_trust_notes: Optional[str] = None
     spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
+
+
+def _category_directive(category: Optional[str]) -> str:
+    """Return extra prompt directive based on relationship category."""
+    if not category:
+        return ""
+    cat = category.lower()
+    if cat == "family":
+        return (
+            "RELATIONSHIP TYPE: family. Hold both loyalty AND boundaries. "
+            "Acknowledge that 'just leave' isn't always an option. Suggest minimum-viable "
+            "boundary moves. No 'cut them off' advice unless asked. Protect user emotionally."
+        )
+    if cat == "romantic":
+        return (
+            "RELATIONSHIP TYPE: romantic/dating. Be the protective best friend. "
+            "Watch for: love-bombing, future-faking, intermittent reinforcement, controlling tone, "
+            "gaslighting. Praise green flags clearly. Call red ones by name."
+        )
+    if cat == "friendship":
+        return (
+            "RELATIONSHIP TYPE: friendship. Track reciprocity and emotional labor balance. "
+            "Note one-sided dynamics. Don't pathologize normal friend friction."
+        )
+    if cat == "professional":
+        return (
+            "RELATIONSHIP TYPE: professional/work. Stay tactical. Talk in scripts, paper trails, "
+            "boundaries by role. Never advise emotional confrontation. Power-aware: factor in "
+            "the user's relative power/risk."
+        )
+    if cat == "blurry":
+        return (
+            "RELATIONSHIP TYPE: BLURRY — categories overlap (e.g. boss who's also a friend, "
+            "ex turned 'best friend', family member who acts romantic, situationship). "
+            "This is where PEPPER goes EXTRA protective. Name the blur explicitly. "
+            "Note that role confusion is itself a flag. Make the user articulate which lane "
+            "this person is actually in before responding. Always end with: 'pick a lane.'"
+        )
+    return ""
 
 
 @app.post("/api/pepper/advise-person")
@@ -996,10 +1036,13 @@ async def advise_person(req: PersonAdviceRequest, user_id: str = "default_user")
             "medium": "Brand voice as defined.",
             "extra_spicy": "Max protective energy. More 'be so for real'. Never cruel.",
         }.get(req.spice_level, "")
-        
+
+        category_directive = _category_directive(req.relationship_category)
+
         context_lines = [
             f"Person: {req.person_name}",
-            f"Relationship: {req.relationship_context or 'not specified'}",
+            f"Relationship category: {req.relationship_category or 'unspecified'}",
+            f"Context: {req.relationship_context or 'not specified'}",
         ]
         if req.promised: context_lines.append(f"What they promised: {req.promised}")
         if req.asked_for: context_lines.append(f"What they're asking for: {req.asked_for}")
@@ -1012,10 +1055,16 @@ async def advise_person(req: PersonAdviceRequest, user_id: str = "default_user")
             + "\n".join(context_lines)
         )
         
+        system_msg = PERSON_ADVICE_SYSTEM_PROMPT
+        if category_directive:
+            system_msg += f"\n\n{category_directive}"
+        if spice_modifier:
+            system_msg += f"\n\n{spice_modifier}"
+
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"advise_person_{user_id}_{datetime.utcnow().timestamp()}",
-            system_message=f"{PERSON_ADVICE_SYSTEM_PROMPT}\n\n{spice_modifier}"
+            system_message=system_msg,
         ).with_model("openai", "gpt-4.1")
         
         response = await chat.send_message(UserMessage(text=user_prompt))

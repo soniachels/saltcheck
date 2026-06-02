@@ -13,7 +13,8 @@
       "bundleIdentifier": "com.saltylabz.saltcheck",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Dump your chaos by voice instead of typing.",
-        "NSFaceIDUsageDescription": "Unlock private Receipts with Face ID."
+        "NSFaceIDUsageDescription": "Unlock private Receipts with Face ID.",
+        "NSPhotoLibraryUsageDescription": "Let PEPPER read screenshots of convos."
       }
     },
     "android": {

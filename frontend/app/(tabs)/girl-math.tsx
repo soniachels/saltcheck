@@ -66,6 +66,7 @@ export default function GirlMathScreen() {
   const today = new Date().toISOString().split('T')[0];
 
   useFocusEffect(useCallback(() => { loadEntry(); }, []));
+  useEffect(() => { loadEntry(); }, []);
 
   const loadEntry = async () => {
     try {
