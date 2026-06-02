@@ -191,11 +191,35 @@ export default function PepperCheckinScreen() {
                 {response.ai_response.quick_read}
               </PepperBubble>
 
+              {/* Clarity questions — PEPPER asks before assuming */}
+              {response.ai_response.needs_clarity &&
+                response.ai_response.clarity_questions &&
+                response.ai_response.clarity_questions.length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>I NEED CLARITY.</Text>
+                    <Text style={styles.sectionHint}>answer one or all. then dump again.</Text>
+                    {response.ai_response.clarity_questions.map((q: string, i: number) => (
+                      <CategoryCard
+                        key={i}
+                        title={q}
+                        icon="help-circle"
+                        variant="lilac"
+                      />
+                    ))}
+                    <Button
+                      title="ANSWER & DUMP AGAIN"
+                      onPress={() => setResponse(null)}
+                      variant="primary"
+                      style={{ marginTop: Spacing.md }}
+                    />
+                  </>
+                )}
+
               {response.ai_response.salt_check &&
                 response.ai_response.salt_check.length > 0 && (
                   <>
                     <Text style={styles.sectionLabel}>TODAY'S SALT CHECK.</Text>
-                    <Text style={styles.sectionHint}>top 3. not top 47.</Text>
+                    <Text style={styles.sectionHint}>top 3. each one has a linked loop.</Text>
                     {response.ai_response.salt_check
                       .slice(0, 3)
                       .map((item: string, i: number) => (
@@ -204,6 +228,31 @@ export default function PepperCheckinScreen() {
                           title={item}
                           badge={`${i + 1}`}
                           variant={i === 0 ? 'lime' : 'dark'}
+                        />
+                      ))}
+                  </>
+                )}
+
+              {/* Show extra loops PEPPER created beyond the top 3 */}
+              {response.ai_response.loops_to_create &&
+                Array.isArray(response.ai_response.loops_to_create) &&
+                (response.ai_response.loops_to_create as any[]).filter(
+                  (l: any) => l && typeof l.linked_priority_index !== 'number'
+                ).length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>ALSO PARKED AS LOOPS.</Text>
+                    <Text style={styles.sectionHint}>not top 3, but i didn't forget.</Text>
+                    {(response.ai_response.loops_to_create as any[])
+                      .filter(
+                        (l: any) => l && typeof l.linked_priority_index !== 'number'
+                      )
+                      .map((l: any, i: number) => (
+                        <CategoryCard
+                          key={`extra-${i}`}
+                          title={l.title}
+                          subtitle={l.deadline ? `due ${l.deadline}` : l.next_action || 'no deadline'}
+                          icon="git-branch"
+                          variant="dark"
                         />
                       ))}
                   </>
@@ -218,6 +267,44 @@ export default function PepperCheckinScreen() {
                   ))}
                 </>
               )}
+
+              {/* Bills auto-saved to Girl Math */}
+              {response.ai_response.bills &&
+                Array.isArray(response.ai_response.bills) &&
+                response.ai_response.bills.length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>SAVED TO GIRL MATH → BILLS.</Text>
+                    <Text style={styles.sectionHint}>i caught these. set dates when you can.</Text>
+                    {response.ai_response.bills.map((b: any, i: number) => (
+                      <CategoryCard
+                        key={`bill-${i}`}
+                        title={`${b.label}${b.amount ? `  ·  ${b.amount}` : ''}`}
+                        subtitle={b.due_date ? `due ${b.due_date}${b.recurring ? ` · ${b.recurring}` : ''}` : b.recurring || 'no date'}
+                        icon="receipt"
+                        variant="red"
+                      />
+                    ))}
+                  </>
+                )}
+
+              {/* Income auto-saved to Girl Math */}
+              {response.ai_response.income &&
+                Array.isArray(response.ai_response.income) &&
+                response.ai_response.income.length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>SAVED TO GIRL MATH → INCOMING.</Text>
+                    <Text style={styles.sectionHint}>money on its way.</Text>
+                    {response.ai_response.income.map((it: any, i: number) => (
+                      <CategoryCard
+                        key={`inc-${i}`}
+                        title={`${it.label}${it.amount ? `  ·  ${it.amount}` : ''}`}
+                        subtitle={it.expected_date ? `expected ${it.expected_date}${it.recurring ? ` · ${it.recurring}` : ''}` : it.recurring || 'no date'}
+                        icon="trending-up"
+                        variant="lime"
+                      />
+                    ))}
+                  </>
+                )}
 
               {response.ai_response.money_check && (
                 <>

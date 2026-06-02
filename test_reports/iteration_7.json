@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 7 — Batch: PEPPER intelligence upgrade (strict classification, auto-link Top 3 to Loops, clarity questions, Receipts advice history). Backend-only. 10/10 new tests in tests/test_pepper_intel_upgrade.py PASS; full backend suite 114/115 PASS (one pre-existing flaky test due to data pollution, not regression). Fixed 2 real bugs discovered by the new tests: (a) TaskResponse Pydantic model crashed on PEPPER-auto-created tasks because `project_id` and `notes` were declared `Optional[str]` without `= None` default — those keys are absent in the auto-create task_doc inserted by /api/pepper/checkin (server.py ~ln 529-538), so subsequent GET /api/tasks/{user_id} returned HTTP 500 ValidationError. Added `= None` defaults to both fields. (b) /api/pepper/checkin returned HTTP 500 when PEPPER's LLM produced `next_sane_step: null` (common in clarity-only responses) because the code used `.get(key, default)` which still returns None when the key is present-but-null. Switched to `or` coalescing. Verified end-to-end: (1) DailyEntry.priorities_task_ids round-trips through POST/GET/PUT and defaults to []; (2) PEPPER /api/pepper/checkin with the pitch+rent+slides+dentist dump produces salt_check (1–3 items), loops_to_create with at least one linked_priority_index, creates new task rows = count of non-empty loops, populates priorities_task_ids on the daily entry to length == salt_check, links real task ids, classifies rent into bills (~$1500) and KEEPS 'pay rent' OUT of salt_check; (3) Vague dump 'everything feels like shit' returns needs_clarity=True with 1–3 string clarity_questions, creates no new tasks, and does NOT overwrite previously seeded top_priorities/priorities_done on the daily entry; (4) advise-person caches last_advice, last_advice_at, and appends to advice_history (1 → 2 entries, newest first by created_at); (5) Regression CRUD green for tasks, daily-entries, money-entries, person-notes, plus the analyze-receipt vision endpoint with a real Pillow PNG.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/daily-entries",
+        "issue": "Plain insert_one (no upsert on (user_id,date)), but GET /api/daily-entries/{user_id}/{date} returns find_one — multiple rows for same user+date can shadow newer writes. Surfaces as flaky data-pollution in tests using shared user_ids. Pre-existing, not introduced by this batch. Carry-over."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "ObjectId() casts still raise bson.errors.InvalidId → HTTP 500 on malformed ids in PUT/DELETE/GET-by-id endpoints."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "server.py size still above 700-line guideline."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pepper_intel_upgrade.py",
+    "/app/test_reports/pytest/pytest_iter7.xml",
+    "/app/test_reports/pytest/pytest_iter7_full.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional cleanup: convert POST /api/daily-entries to true upsert keyed by (user_id, date) to eliminate cross-run pollution and make GET-by-date deterministic.",
+    "Optional carry-over: wrap ObjectId() casts to return 404 on malformed ids; split server.py into smaller routers."
+  ],
+  "critical_code_review_comments": [
+    "TaskResponse.project_id / TaskResponse.notes were declared `Optional[str]` with no default. In Pydantic v2, `Optional[X]` only widens the type — the field is still required. Fixed by adding `= None`. This was the root cause of 500s right after PEPPER auto-creates tasks (task_doc omits those keys).",
+    "pepper_checkin used `ai_response.get('next_sane_step', default)` — but the LLM frequently returns the key with literal null on clarity-mode responses, so `.get()` returned None and AICheckInResponse (which requires `next_sane_step: str`) rejected it with 500. Switched to `ai_response.get('next_sane_step') or default`.",
+    "POST /api/daily-entries is a plain insert (not upsert) while GET-by-date uses find_one — duplicates accumulate per user+date over test runs. Recommend Mongo upsert with key (user_id, date).",
+    "salt_check classification verified empirically: pitch/slides/dentist appeared in salt_check; rent (with $1500) appeared in bills only — not in salt_check.",
+    "advise-person history correctly orders newest-first and survives a 1.1s spaced replay; field cap (20) is declared but not stress-tested per request scope."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (TaskResponse Optional defaults; next_sane_step null-coalescing)",
+    "/app/backend/tests/test_pepper_intel_upgrade.py (new — 10 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 new batch tests; 114/115 full suite — 1 pre-existing data-pollution flake passes on isolated rerun)",
+    "frontend": "not_tested"
+  },
+  "seed_data_creation": "Per-test unique user_ids: TEST_pti_user_<ts>, TEST_intel_user, TEST_clarity_user, TEST_history_user, TEST_regression_intel*. Each class's teardown best-effort deletes tasks and person-notes via API. Daily-entries and money-entries leak (no DELETE endpoints exist) — by design / pre-existing.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run via /app/frontend/.env EXPO_PUBLIC_BACKEND_URL. New batch fully verified by /app/backend/tests/test_pepper_intel_upgrade.py — uses time-suffixed user_ids in places where (user_id+date) shadowing was an issue, since POST /api/daily-entries is a plain insert (not upsert). Two real backend bugs were found and fixed in /app/backend/server.py: TaskResponse.project_id/notes defaults, and pepper_checkin next_sane_step null-coalescing. Pre-existing 1-test flake in test_priorities_done.py (TestDailyEntryPrioritiesDone.test_post_then_get_then_put_priorities_done) is a data-pollution artifact from shared default_user+date keys; passes on isolated rerun.",
+  "rca_of_issue": "Bug 1 — TaskResponse 500 after PEPPER auto-create:\n  Reproduction: POST /api/pepper/checkin with a dump that yields loops_to_create → /api/pepper/checkin inserts task_doc lacking `project_id` and `notes` keys → GET /api/tasks/{user_id} attempts TaskResponse(**task) → ValidationError → 500.\n  Root cause: Pydantic v2 treats `Optional[str]` as type-only (still required). The PEPPER auto-create path omits those keys (vs. the user-facing POST /api/tasks path which goes through TaskCreate Pydantic defaults).\n  Mitigation: Added `= None` defaults to TaskResponse.project_id and TaskResponse.notes.\n\nBug 2 — pepper_checkin 500 on clarity LLM output:\n  Reproduction: POST /api/pepper/checkin {raw_dump: 'everything feels like shit'} → LLM returns JSON with `next_sane_step: null` (clarity mode) → server uses `ai_response.get('next_sane_step', default)` which returns None (key exists) → AICheckInResponse(next_sane_step=None) fails validation → 500 'PEPPER is taking a break'.\n  Root cause: dict.get(k, d) returns d only when k is absent, not when k is present-and-None.\n  Mitigation: `ai_response.get('next_sane_step') or 'Take a breath and start with one thing'`. Same coalescing applied to salt_check/parked lists."
+}

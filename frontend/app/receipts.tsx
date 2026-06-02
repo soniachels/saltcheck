@@ -136,10 +136,18 @@ export default function ReceiptsScreen() {
     }
   };
 
-  const askPepper = async (receipt: any) => {
+  const askPepper = async (receipt: any, forceRefresh = false) => {
     setActiveReceipt(receipt);
-    setAdvice(null);
     setScreenshotRead(null);
+
+    // Reuse cached advice if available and not forcing a refresh
+    if (!forceRefresh && receipt.last_advice) {
+      setAdvice(receipt.last_advice);
+      setAdviceLoading(false);
+      return;
+    }
+
+    setAdvice(null);
     setAdviceLoading(true);
     try {
       const res = await apiClient.post(
@@ -158,11 +166,23 @@ export default function ReceiptsScreen() {
         }
       );
       setAdvice(res.data);
+      // Refresh receipt list so the cache is updated for future taps
+      loadReceipts();
     } catch (e) {
       Alert.alert('PEPPER is reading the room', 'Try again in a sec.');
     } finally {
       setAdviceLoading(false);
     }
+  };
+
+  const [showHistory, setShowHistory] = useState(false);
+  const formatDateTime = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+             ' · ' +
+             d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    } catch { return iso; }
   };
 
   const dropScreenshot = async () => {
@@ -343,6 +363,15 @@ export default function ReceiptsScreen() {
           <Text style={styles.hero}>RECEIPTS</Text>
           <Text style={styles.heroSub}>trust no one. remember everything.</Text>
 
+          <TouchableOpacity
+            style={styles.newReceiptBtn}
+            onPress={() => openEditor()}
+            testID="receipts-new-btn"
+          >
+            <Ionicons name="add" size={18} color={Colors.saltBone} />
+            <Text style={styles.newReceiptText}>NEW RECEIPT</Text>
+          </TouchableOpacity>
+
           {/* Category filter chips */}
           {receipts.length > 0 && (
             <ScrollView
@@ -432,15 +461,6 @@ export default function ReceiptsScreen() {
           )}
         </ScrollView>
 
-        {/* FAB */}
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => openEditor()}
-          testID="receipts-add-fab"
-        >
-          <Ionicons name="add" size={28} color={Colors.saltBone} />
-        </TouchableOpacity>
-
         {/* Advice Modal — Ask PEPPER about this person */}
         <Modal
           visible={!!activeReceipt && !editorVisible}
@@ -472,13 +492,20 @@ export default function ReceiptsScreen() {
                 ) : advice ? (
                   <>
                     {/* Verdict pill */}
-                    <View
-                      style={[
-                        styles.verdictPill,
-                        { backgroundColor: VERDICT_MAP[advice.verdict].color },
-                      ]}
-                    >
-                      <Text style={styles.verdictText}>{VERDICT_MAP[advice.verdict].label}</Text>
+                    <View style={styles.adviceHeaderRow}>
+                      <View
+                        style={[
+                          styles.verdictPill,
+                          { backgroundColor: VERDICT_MAP[advice.verdict].color },
+                        ]}
+                      >
+                        <Text style={styles.verdictText}>{VERDICT_MAP[advice.verdict].label}</Text>
+                      </View>
+                      {activeReceipt?.last_advice_at && (
+                        <Text style={styles.cachedLabel}>
+                          read {formatDateTime(activeReceipt.last_advice_at)}
+                        </Text>
+                      )}
                     </View>
 
                     <PepperBubble label="* PEPPER" variant="red">
@@ -506,6 +533,58 @@ export default function ReceiptsScreen() {
                         <PepperBubble variant="lilac">{advice.what_to_say}</PepperBubble>
                       </>
                     )}
+
+                    {/* Re-evaluate + History buttons */}
+                    <View style={styles.adviceControls}>
+                      <TouchableOpacity
+                        style={styles.smallBtn}
+                        onPress={() => activeReceipt && askPepper(activeReceipt, true)}
+                      >
+                        <Ionicons name="refresh" size={14} color={Colors.brightRed} />
+                        <Text style={styles.smallBtnText}>RE-EVALUATE</Text>
+                      </TouchableOpacity>
+                      {activeReceipt?.advice_history && activeReceipt.advice_history.length > 1 && (
+                        <TouchableOpacity
+                          style={styles.smallBtn}
+                          onPress={() => setShowHistory((v) => !v)}
+                        >
+                          <Ionicons name="time" size={14} color={Colors.softSpiceLilac} />
+                          <Text style={[styles.smallBtnText, { color: Colors.softSpiceLilac }]}>
+                            {showHistory ? 'HIDE' : 'HISTORY'} ({activeReceipt.advice_history.length - 1})
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+
+                    {/* History — prior evaluations */}
+                    {showHistory && activeReceipt?.advice_history && (
+                      <>
+                        <Text style={styles.sectionLabel}>PRIOR READS</Text>
+                        {(activeReceipt.advice_history as any[]).slice(1).map((h, i) => (
+                          <View key={i} style={styles.historyCard}>
+                            <View style={styles.historyHead}>
+                              <View
+                                style={[
+                                  styles.verdictPillSmall,
+                                  { backgroundColor: VERDICT_MAP[h.advice?.verdict || 'caution'].color },
+                                ]}
+                              >
+                                <Text style={styles.verdictTextSmall}>
+                                  {VERDICT_MAP[h.advice?.verdict || 'caution'].label}
+                                </Text>
+                              </View>
+                              <Text style={styles.historyDate}>
+                                {h.created_at ? formatDateTime(h.created_at) : ''}
+                              </Text>
+                            </View>
+                            <Text style={styles.historyVibe}>{h.advice?.vibe_read}</Text>
+                            {h.advice?.the_move && (
+                              <Text style={styles.historyMove}>→ {h.advice.the_move}</Text>
+                            )}
+                          </View>
+                        ))}
+                      </>
+                    )}
                   </>
                 ) : (
                   <CategoryCard
@@ -513,7 +592,7 @@ export default function ReceiptsScreen() {
                     subtitle="Read the vibe and get one clear move."
                     variant="red"
                     icon="flame"
-                    onPress={() => activeReceipt && askPepper(activeReceipt)}
+                    onPress={() => activeReceipt && askPepper(activeReceipt, true)}
                   />
                 )}
 
@@ -701,7 +780,7 @@ export default function ReceiptsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Layout.screenPadding, paddingBottom: 120 },
+  content: { padding: Layout.screenPadding, paddingTop: Spacing.xl + Spacing.md, paddingBottom: 120 },
   hero: {
     fontSize: Typography.fontSize.display,
     fontWeight: '900',
@@ -824,5 +903,95 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
     fontWeight: '700',
     letterSpacing: 1,
+  },
+  newReceiptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.brightRed,
+    marginTop: Spacing.md,
+  },
+  newReceiptText: {
+    color: Colors.saltBone,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  adviceHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: Spacing.md,
+  },
+  cachedLabel: {
+    color: Colors.steelBlueGrey,
+    fontSize: Typography.fontSize.xs,
+    fontStyle: 'italic',
+  },
+  adviceControls: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginTop: Spacing.lg,
+    flexWrap: 'wrap',
+  },
+  smallBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  smallBtnText: {
+    color: Colors.brightRed,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  historyCard: {
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  historyHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.sm,
+  },
+  verdictPillSmall: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: BorderRadius.full,
+  },
+  verdictTextSmall: {
+    color: Colors.inkBlack,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  historyDate: {
+    color: Colors.steelBlueGrey,
+    fontSize: Typography.fontSize.xs,
+  },
+  historyVibe: {
+    color: Colors.text,
+    fontSize: Typography.fontSize.sm,
+    marginBottom: 4,
+  },
+  historyMove: {
+    color: Colors.pickleLime,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: '700',
   },
 });

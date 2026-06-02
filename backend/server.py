@@ -81,6 +81,7 @@ class DailyEntryCreate(BaseModel):
     date: str  # YYYY-MM-DD format
     top_priorities: List[str] = []
     priorities_done: List[bool] = []
+    priorities_task_ids: List[Optional[str]] = []
     water_checked: bool = False
     food_checked: bool = False
     hygiene_checked: bool = False
@@ -96,6 +97,7 @@ class DailyEntryResponse(BaseModel):
     date: str
     top_priorities: List[str]
     priorities_done: List[bool] = []
+    priorities_task_ids: List[Optional[str]] = []
     water_checked: bool
     food_checked: bool
     hygiene_checked: bool
@@ -133,12 +135,12 @@ class TaskCreate(BaseModel):
 class TaskResponse(BaseModel):
     id: str
     user_id: str
-    project_id: Optional[str]
+    project_id: Optional[str] = None
     title: str
-    next_action: Optional[str]
-    deadline: Optional[str]
+    next_action: Optional[str] = None
+    deadline: Optional[str] = None
     status: str
-    notes: Optional[str]
+    notes: Optional[str] = None
     parked: bool
     created_at: datetime
     updated_at: datetime
@@ -243,6 +245,9 @@ class PersonNoteResponse(BaseModel):
     follow_up_needed: Optional[str]
     risk_trust_notes: Optional[str]
     locked: bool
+    advice_history: List[dict] = []
+    last_advice: Optional[dict] = None
+    last_advice_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -295,21 +300,49 @@ Format your response as JSON with these keys:
 {
   "quick_read": "One line emotional read",
   "salt_check": ["Move 1", "Move 2", "Move 3"],
+  "loops_to_create": [
+    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "linked_priority_index": 0}
+  ],
   "parked": ["Item 1", "Item 2"],
   "money_check": "One money-related insight or null",
   "body_check": "One body-related insight or null",
   "next_sane_step": "One immediate action",
   "closer": "Optional spicy closer",
   "bills": [{"label": "rent", "amount": 1200, "due_date": "2026-06-15", "recurring": "monthly"}],
-  "income": [{"label": "freelance invoice", "amount": 800, "expected_date": "2026-06-10", "recurring": null}]
+  "income": [{"label": "freelance invoice", "amount": 800, "expected_date": "2026-06-10", "recurring": null}],
+  "needs_clarity": false,
+  "clarity_questions": []
 }
 
-Rules for "bills" and "income":
-- ONLY include if the user explicitly mentions a bill/payment/amount/incoming in their dump. Do not invent.
-- "amount" is a number (no currency symbol). If user did not say the amount, omit the entry.
-- "due_date" / "expected_date" is "YYYY-MM-DD" if user gave a date or you can confidently infer (e.g. "rent on the 15th" → next 15th). Omit otherwise.
-- "recurring" is one of "monthly" | "weekly" | "yearly" if recurrence is mentioned (e.g. "monthly rent", "weekly groceries"), else null.
-- Return EMPTY arrays if user mentioned no money items. Never put loops, body, or vague stuff here.
+STRICT RULES FOR CLASSIFICATION (read carefully):
+
+1. **salt_check (Top 3)** — ONLY the most important, simplest, most-urgent moves for TODAY.
+   - MUST be simple atomic actions, NOT projects with subtasks.
+   - NEVER include money payments here. "Pay credit card" is a BILL, not a salt_check item.
+   - NEVER include vague items ("get my life together"). Pass those to clarity_questions instead.
+   - If something is big (multiple steps), put the FIRST CONCRETE NEXT STEP in salt_check and the full project in loops_to_create.
+   - MAX 3 items. Be ruthless.
+
+2. **loops_to_create** — Open loops (tasks/projects) with optional deadlines.
+   - For EACH salt_check item, ALSO create a matching loop with `linked_priority_index` set to that item's index (0/1/2). This keeps the Top 3 and the open loops in sync.
+   - Add additional loops for items that aren't urgent enough for top 3 but still need to be tracked.
+   - "deadline" is YYYY-MM-DD if user gave/implied a date.
+   - Do NOT include money items or body items here.
+
+3. **bills** — Anything the user owes / has to pay (rent, credit card, utilities, subscriptions, fines, etc).
+   - These do NOT belong in salt_check, loops_to_create, or parked.
+   - If user dumps "I have to pay my credit card bill of $250 by Friday" — that's a BILL, not a task.
+
+4. **income** — Anything the user expects to receive (paychecks, invoices, refunds).
+   - Same rule: NOT in salt_check or loops.
+
+5. **body_check** — Body-related insight (one line). The actual symptom/log goes nowhere else; it stays as advice.
+
+6. **needs_clarity** — Set TRUE when the dump is too vague, missing key info, or you would have to guess to give a real read.
+   - When TRUE, **return EMPTY salt_check/loops/parked** and put 1–3 specific questions in `clarity_questions`.
+   - Examples of vague dumps that trigger clarity: "everything is a mess", "stressed about work", "I dunno", "feeling weird".
+   - Don't ask if you can already make 3 confident moves from the dump.
+   - Be brief: short questions. No therapy speak. e.g. "what's the deadline?", "is this work or life?", "what's actually due today?"
 """
 
 PERSON_ADVICE_SYSTEM_PROMPT = """You are PEPPER, the salty, protective AI bestie. The user has shared notes about a specific person in their life and needs your read on the situation.
@@ -458,9 +491,9 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
                 }
         
         # Extract items for structured data
-        urgent_items = ai_response.get("salt_check", [])
-        parked_items = ai_response.get("parked", [])
-        next_sane_step = ai_response.get("next_sane_step", "Take a breath and start with one thing")
+        urgent_items = ai_response.get("salt_check", []) or []
+        parked_items = ai_response.get("parked", []) or []
+        next_sane_step = ai_response.get("next_sane_step") or "Take a breath and start with one thing"
         
         # Save to database
         checkin_doc = {
@@ -479,8 +512,37 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
         
         # Auto-sync to today's daily entry so the Today screen reflects PEPPER's plan
         today_str = datetime.utcnow().strftime("%Y-%m-%d")
-        salt_check_items = ai_response.get("salt_check", [])
+        needs_clarity = bool(ai_response.get("needs_clarity"))
+        salt_check_items = ai_response.get("salt_check", []) if not needs_clarity else []
+        loops_to_create = ai_response.get("loops_to_create", []) if not needs_clarity else []
         
+        # ---- Create loops and link each to its top-3 priority ----
+        # priorities_task_ids[i] = task_id linked to salt_check_items[i]
+        priorities_task_ids: List[Optional[str]] = [None] * len(salt_check_items[:3])
+        if isinstance(loops_to_create, list):
+            for loop_spec in loops_to_create:
+                if not isinstance(loop_spec, dict):
+                    continue
+                title = (loop_spec.get("title") or "").strip()
+                if not title:
+                    continue
+                task_doc = {
+                    "user_id": user_id,
+                    "title": title,
+                    "next_action": loop_spec.get("next_action") or None,
+                    "deadline": loop_spec.get("deadline") or None,
+                    "status": "not_started",
+                    "parked": False,
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                }
+                task_result = await tasks_collection.insert_one(task_doc)
+                task_id = str(task_result.inserted_id)
+                # Link to top_3 if linked_priority_index points at one
+                link_idx = loop_spec.get("linked_priority_index")
+                if isinstance(link_idx, int) and 0 <= link_idx < len(priorities_task_ids):
+                    priorities_task_ids[link_idx] = task_id
+
         # Pick action items by keyword heuristic (work/money/life)
         work_action = None
         money_action = ai_response.get("money_check")
@@ -497,6 +559,7 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
             "date": today_str,
             "top_priorities": salt_check_items[:3],
             "priorities_done": [False] * len(salt_check_items[:3]),
+            "priorities_task_ids": priorities_task_ids,
             "next_sane_step": next_sane_step,
             "money_action": money_action,
             "work_action": work_action,
@@ -509,21 +572,35 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
         if existing_entry:
             # Preserve checkbox state and priorities_done on update
             preserved_done = existing_entry.get("priorities_done", [])
+            preserved_ids = existing_entry.get("priorities_task_ids", [])
             new_priorities = salt_check_items[:3]
-            # Re-align done flags with new priorities. If list grew/shrank, pad/truncate.
-            aligned = []
+            # Re-align done flags + task IDs with new priorities.
+            aligned_done = []
+            aligned_ids = []
             for i in range(len(new_priorities)):
-                # If same item was previously done at same index, preserve. Otherwise default false.
                 if i < len(preserved_done):
-                    aligned.append(preserved_done[i])
+                    aligned_done.append(preserved_done[i])
                 else:
-                    aligned.append(False)
-            daily_entry_data["priorities_done"] = aligned
+                    aligned_done.append(False)
+                # Prefer new task ids; fall back to existing
+                if priorities_task_ids[i]:
+                    aligned_ids.append(priorities_task_ids[i])
+                elif i < len(preserved_ids):
+                    aligned_ids.append(preserved_ids[i])
+                else:
+                    aligned_ids.append(None)
+            daily_entry_data["priorities_done"] = aligned_done
+            daily_entry_data["priorities_task_ids"] = aligned_ids
+            # Don't blow away today's entry if PEPPER asked for clarity (no salt_check provided)
+            if needs_clarity:
+                daily_entry_data.pop("top_priorities", None)
+                daily_entry_data.pop("priorities_done", None)
+                daily_entry_data.pop("priorities_task_ids", None)
             await daily_entries_collection.update_one(
                 {"_id": existing_entry["_id"]},
                 {"$set": daily_entry_data}
             )
-        else:
+        elif not needs_clarity:
             daily_entry_data["water_checked"] = False
             daily_entry_data["food_checked"] = False
             daily_entry_data["hygiene_checked"] = False
@@ -1087,6 +1164,38 @@ async def advise_person(req: PersonAdviceRequest, user_id: str = "default_user")
                     "what_to_say": None,
                     "verdict": "caution",
                 }
+        
+        # Persist advice in person_note advice_history (most recent first)
+        if req.person_note_id:
+            try:
+                advice_entry = {
+                    "advice": advice,
+                    "snapshot_context": {
+                        "relationship_category": req.relationship_category,
+                        "relationship_context": req.relationship_context,
+                        "promised": req.promised,
+                        "asked_for": req.asked_for,
+                        "do_not_reveal": req.do_not_reveal,
+                        "follow_up_needed": req.follow_up_needed,
+                        "risk_trust_notes": req.risk_trust_notes,
+                    },
+                    "spice_level": req.spice_level,
+                    "created_at": datetime.utcnow(),
+                }
+                await person_notes_collection.update_one(
+                    {"_id": ObjectId(req.person_note_id)},
+                    {
+                        "$push": {"advice_history": {"$each": [advice_entry], "$position": 0, "$slice": 20}},
+                        "$set": {
+                            "last_advice": advice,
+                            "last_advice_at": datetime.utcnow(),
+                            "updated_at": datetime.utcnow(),
+                        },
+                    },
+                )
+            except Exception as e:
+                # Non-fatal — advice still returned to user
+                print(f"[advise-person] history append failed: {e}")
         
         return advice
     except Exception as e:

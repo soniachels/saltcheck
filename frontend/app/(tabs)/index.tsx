@@ -127,6 +127,9 @@ export default function TodayScreen() {
     delete payload.created_at;
     delete payload.updated_at;
     await apiClient.put(`/tasks/${task.id}`, payload);
+    if (wasDone !== nowDone) {
+      await syncLinkedPriority(task.id, nowDone);
+    }
     if (!wasDone && nowDone) {
       setPepperReaction(loopDoneReaction());
     }
@@ -137,6 +140,7 @@ export default function TodayScreen() {
     if (!todayEntry) return;
     const priorities = todayEntry.top_priorities || [];
     const current: boolean[] = (todayEntry.priorities_done || []).slice();
+    const taskIds: (string | null)[] = (todayEntry.priorities_task_ids || []).slice();
     while (current.length < priorities.length) current.push(false);
     const wasDone = !!current[i];
     current[i] = !wasDone;
@@ -160,6 +164,24 @@ export default function TodayScreen() {
     try {
       const r = await apiClient.put(`/daily-entries/${todayEntry.id}`, updated);
       setTodayEntry(r.data);
+      // Sync the linked Loop if there is one
+      const linkedTaskId = taskIds[i];
+      if (linkedTaskId) {
+        const linkedTask = tasks.find((t) => t.id === linkedTaskId);
+        if (linkedTask) {
+          const newStatus = !wasDone ? 'done' : 'in_progress';
+          if (linkedTask.status !== newStatus) {
+            const taskPayload = { ...linkedTask, status: newStatus };
+            delete taskPayload.id;
+            delete taskPayload.user_id;
+            delete taskPayload.created_at;
+            delete taskPayload.updated_at;
+            await apiClient.put(`/tasks/${linkedTaskId}`, taskPayload);
+          }
+        }
+      }
+      // Refresh tasks list to reflect sync
+      loadAll();
     } catch (e) {
       // Revert on failure
       const reverted = current.slice();
@@ -175,6 +197,8 @@ export default function TodayScreen() {
     delete payload.created_at;
     delete payload.updated_at;
     await apiClient.put(`/tasks/${task.id}`, payload);
+    // If this task is linked to a Top 3 priority, also sync
+    await syncLinkedPriority(task.id, true);
     setPepperReaction(loopDoneReaction());
     loadAll();
   };
@@ -186,8 +210,30 @@ export default function TodayScreen() {
     delete payload.created_at;
     delete payload.updated_at;
     await apiClient.put(`/tasks/${task.id}`, payload);
+    await syncLinkedPriority(task.id, false);
     setPepperReaction("ok. moved it back to in-progress. set a real date this time.");
     loadAll();
+  };
+
+  // Helper: keep priorities_done in sync when a linked task changes
+  const syncLinkedPriority = async (taskId: string, done: boolean) => {
+    if (!todayEntry) return;
+    const taskIds: (string | null)[] = todayEntry.priorities_task_ids || [];
+    const idx = taskIds.indexOf(taskId);
+    if (idx < 0) return;
+    const current: boolean[] = (todayEntry.priorities_done || []).slice();
+    while (current.length <= idx) current.push(false);
+    if (current[idx] === done) return; // already in sync
+    current[idx] = done;
+    const updated = { ...todayEntry, priorities_done: current };
+    delete (updated as any).id;
+    delete (updated as any).user_id;
+    delete (updated as any).created_at;
+    delete (updated as any).updated_at;
+    try {
+      const r = await apiClient.put(`/daily-entries/${todayEntry.id}`, updated);
+      setTodayEntry(r.data);
+    } catch {}
   };
 
   const deleteTask = async (id: string) => {
