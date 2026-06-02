@@ -22,7 +22,11 @@ class TestAdvisePerson:
         assert data["verdict"] in self.VALID_VERDICTS, f"bad verdict: {data['verdict']}"
         assert isinstance(data["watch_out_for"], list)
         assert isinstance(data["vibe_read"], str) and len(data["vibe_read"]) > 0
-        assert isinstance(data["the_move"], str) and len(data["the_move"]) > 0
+        # NEW (Batch 5 clarity-first): if needs_clarity=true, the_move/what_to_say may be empty/null.
+        if data.get("needs_clarity"):
+            assert data.get("the_move") in (None, "") or isinstance(data["the_move"], str)
+        else:
+            assert isinstance(data["the_move"], str) and len(data["the_move"]) > 0
         # what_to_say can be None OR string
         assert data["what_to_say"] is None or isinstance(data["what_to_say"], str)
 

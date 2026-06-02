@@ -8,6 +8,7 @@ import {
   Alert,
   TouchableOpacity,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { Stack } from 'expo-router';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -32,6 +33,8 @@ type Verdict = 'trust' | 'caution' | 'cut';
 type Category = 'family' | 'romantic' | 'friendship' | 'professional' | 'blurry';
 
 interface PersonAdvice {
+  needs_clarity?: boolean;
+  clarity_questions?: string[];
   vibe_read: string;
   the_move: string;
   watch_out_for: string[];
@@ -136,12 +139,14 @@ export default function ReceiptsScreen() {
     }
   };
 
-  const askPepper = async (receipt: any, forceRefresh = false) => {
+  const [clarificationText, setClarificationText] = useState('');
+
+  const askPepper = async (receipt: any, forceRefresh = false, clarification?: string) => {
     setActiveReceipt(receipt);
     setScreenshotRead(null);
 
-    // Reuse cached advice if available and not forcing a refresh
-    if (!forceRefresh && receipt.last_advice) {
+    // Reuse cached advice only if not forcing and no clarification provided
+    if (!forceRefresh && !clarification && receipt.last_advice) {
       setAdvice(receipt.last_advice);
       setAdviceLoading(false);
       return;
@@ -162,17 +167,23 @@ export default function ReceiptsScreen() {
           do_not_reveal: receipt.do_not_reveal,
           follow_up_needed: receipt.follow_up_needed,
           risk_trust_notes: receipt.risk_trust_notes,
+          user_clarification: clarification || undefined,
           spice_level: pepperSpiceLevel,
         }
       );
       setAdvice(res.data);
-      // Refresh receipt list so the cache is updated for future taps
+      setClarificationText('');
       loadReceipts();
     } catch (e) {
       Alert.alert('PEPPER is reading the room', 'Try again in a sec.');
     } finally {
       setAdviceLoading(false);
     }
+  };
+
+  const submitClarification = () => {
+    if (!activeReceipt || !clarificationText.trim()) return;
+    askPepper(activeReceipt, true, clarificationText.trim());
   };
 
   const [showHistory, setShowHistory] = useState(false);
@@ -489,6 +500,43 @@ export default function ReceiptsScreen() {
                     <ActivityIndicator color={Colors.brightRed} />
                     <Text style={styles.loadingText}>PEPPER IS READING THE ROOM...</Text>
                   </View>
+                ) : advice && advice.needs_clarity && advice.clarity_questions && advice.clarity_questions.length > 0 ? (
+                  /* CLARITY-FIRST: PEPPER wants more info before giving a cut */
+                  <>
+                    <PepperBubble label="* PEPPER" variant="lilac">
+                      {advice.vibe_read || "i'm not gonna guess on this one."}
+                    </PepperBubble>
+                    <Text style={styles.sectionLabel}>I NEED MORE.</Text>
+                    <Text style={styles.sectionHint}>answer one or all. then i'll give you the read.</Text>
+                    {advice.clarity_questions.map((q: string, i: number) => (
+                      <CategoryCard
+                        key={`clar-${i}`}
+                        title={q}
+                        icon="help-circle"
+                        variant="lilac"
+                      />
+                    ))}
+                    <View style={styles.clarityInputCard}>
+                      <Text style={styles.clarityLabel}>YOUR ANSWER</Text>
+                      <TextInput
+                        style={styles.clarityInput}
+                        value={clarificationText}
+                        onChangeText={setClarificationText}
+                        placeholder="say more..."
+                        placeholderTextColor={Colors.steelBlueGrey}
+                        multiline
+                        numberOfLines={3}
+                        textAlignVertical="top"
+                      />
+                      <Button
+                        title="GIVE ME THE READ"
+                        onPress={submitClarification}
+                        variant="primary"
+                        disabled={!clarificationText.trim()}
+                        style={{ marginTop: Spacing.sm }}
+                      />
+                    </View>
+                  </>
                 ) : advice ? (
                   <>
                     {/* Verdict pill */}
@@ -993,5 +1041,31 @@ const styles = StyleSheet.create({
     color: Colors.pickleLime,
     fontSize: Typography.fontSize.xs,
     fontWeight: '700',
+  },
+  clarityInputCard: {
+    backgroundColor: Colors.charcoalRaised,
+    borderRadius: BorderRadius.xl,
+    padding: Layout.cardPadding,
+    borderWidth: 1,
+    borderColor: Colors.softSpiceLilac,
+    marginTop: Spacing.md,
+  },
+  clarityLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.softSpiceLilac,
+    fontWeight: '800',
+    letterSpacing: 2,
+    marginBottom: Spacing.sm,
+  },
+  clarityInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    fontSize: Typography.fontSize.md,
+    color: Colors.text,
+    backgroundColor: Colors.inkBlack,
+    minHeight: 80,
+    lineHeight: Typography.fontSize.md * 1.4,
   },
 });

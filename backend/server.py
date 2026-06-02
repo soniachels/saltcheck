@@ -356,14 +356,25 @@ Your job:
 3. Give them a clear move (text, ignore, set boundary, follow up, cut losses)
 4. Flag risk if you see it (love-bombing, taking advantage, gaslighting patterns — call it out without diagnosing)
 
+CRITICAL: BEFORE giving a verdict, check if you actually have enough context. If the notes are thin (no specific incident, no ask, no recent message, no quote from them) OR ambiguous (could mean multiple things), DO NOT guess. Ask for clarity.
+
 Output JSON only:
 {
+  "needs_clarity": false,
+  "clarity_questions": [],
   "vibe_read": "One blunt line on what this person is doing",
   "the_move": "ONE clear action to take (e.g. 'Send the boundary text. Stop drafting paragraphs.')",
   "watch_out_for": ["Pattern 1", "Pattern 2"],
   "what_to_say": "If a reply/text is appropriate, the actual short text to send. Otherwise null.",
-  "verdict": "trust | caution | cut" 
-}"""
+  "verdict": "trust | caution | cut"
+}
+
+When you need clarity:
+- Set `needs_clarity` = true
+- Put 1-3 short, specific questions in `clarity_questions` (max 3, ideally 1-2). Examples: "what did they actually say in the last text?", "what are you trying to decide — keep them, cut them, or escalate?", "is this about money, time, or feelings?"
+- You may STILL fill in `vibe_read` as a preliminary read, but leave `the_move`, `watch_out_for`, `what_to_say` empty/null and `verdict` should be "caution".
+- Do NOT ask for clarity if the notes clearly describe a specific incident, ask, or pattern. Only when context is genuinely thin or ambiguous.
+"""
 
 BODY_ADVICE_SYSTEM_PROMPT = """You are PEPPER, the salty, protective AI bestie helping the user care for their body. They've shared body/health notes (cycle, meds, sleep, symptoms, appointments) and want your read.
 
@@ -1063,6 +1074,7 @@ class PersonAdviceRequest(BaseModel):
     do_not_reveal: Optional[str] = None
     follow_up_needed: Optional[str] = None
     risk_trust_notes: Optional[str] = None
+    user_clarification: Optional[str] = None
     spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
 
 
@@ -1127,6 +1139,9 @@ async def advise_person(req: PersonAdviceRequest, user_id: str = "default_user")
         if req.do_not_reveal: context_lines.append(f"Do not reveal to them: {req.do_not_reveal}")
         if req.follow_up_needed: context_lines.append(f"Follow up needed: {req.follow_up_needed}")
         if req.risk_trust_notes: context_lines.append(f"Risk/trust notes: {req.risk_trust_notes}")
+        if req.user_clarification:
+            context_lines.append(f"USER CLARIFICATION (just provided in response to your previous question): {req.user_clarification}")
+            context_lines.append("Since the user just clarified, DO NOT set needs_clarity=true again. Give your read now.")
         
         user_prompt = (
             "Read these notes and give your read on this person. JSON only.\n\n"

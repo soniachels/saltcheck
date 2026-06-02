@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 9 — Batch 5: PEPPER advise-person clarity-first flow. Backend-only. All 4 spec items PASS. Created /app/backend/tests/test_pepper_clarity_flow.py with 9 tests, all green on first run: (1) THIN context (person_name=Jamie, category=romantic, context='idk', empty risk_trust_notes, no promised/asked_for) correctly returns needs_clarity=true with clarity_questions list of 1-3 non-empty short strings, the_move=null/empty, watch_out_for=[], what_to_say=null/empty, verdict='caution'; (2) Second call with concrete user_clarification ('They texted me at 2am yesterday saying they miss me, but they have a new gf. I'm deciding whether to reply at all.') returns needs_clarity=false (or absent) with non-empty the_move string AND watch_out_for list >=1 non-empty entry and valid verdict; (3) Rich context (boss/raise/Q2/delaying conversation) returns needs_clarity=false with real the_move (with single retry guard per spec); (4) advice_history caching: created a person-note, fired all 3 calls with person_note_id, GET /api/person-notes/{user_id} confirms advice_history grew by >=3 entries each with advice + snapshot_context + spice_level keys, and last_advice + last_advice_at are set. (5) Regression: all prior Batch 1-4 suites pass — full suite 142/142 PASSED in 104s including test_batch_d, test_bills_income, test_medications, test_money_entry_extended, test_new_features, test_pepper_advice_and_body, test_pepper_intel_upgrade, test_priorities_done, test_saltcheck_backend. Fixed 2 pre-existing tests that now collide with the new clarity-first schema (they used to require non-empty the_move on thin/blurry payloads that now legitimately trigger needs_clarity=true): made the_move assertion conditional on needs_clarity in both test_pepper_advice_and_body.py::TestAdvisePerson._assert_shape and test_batch_d_category_and_vision.py::TestAdvisePersonCategory::test_blurry_category_response_shape. No production code changes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/pepper/advise-person",
+        "issue": "Schema is consistent and stable, but advice_history entries do not record needs_clarity/clarity_questions in the persisted advice snapshot? They ARE persisted (the full advice dict is stored), confirmed via direct inspection — flagging only as awareness item, not a bug."
+      },
+      {
+        "endpoint": "carry-over from iter 8",
+        "issue": "server.py is ~1530 lines now — still exceeds 700-line guideline. Consider splitting into routers (pepper, person_notes, medications, body, money)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pepper_clarity_flow.py",
+    "/app/test_reports/pytest/pytest_iter9_clarity.xml",
+    "/app/test_reports/pytest/pytest_iter9_full.xml"
+  ],
+  "action_items": [
+    "Frontend (next iteration): wire the needs_clarity=true branch — show clarity_questions as a follow-up prompt in PEPPER's reply card, then resubmit with user_clarification field populated by the user's answer.",
+    "Frontend: ensure the advise-person UI does NOT render empty the_move / watch_out_for sections when needs_clarity=true (handle gracefully)."
+  ],
+  "critical_code_review_comments": [
+    "PERSON_ADVICE_SYSTEM_PROMPT correctly instructs needs_clarity-first behavior with explicit JSON example and rule that thin context => empty action fields + verdict='caution'. Verified by 1st-run pass on thin payload.",
+    "user_clarification field in PersonAdviceRequest correctly threaded through to context_lines with explicit 'DO NOT set needs_clarity=true again' directive — works reliably in 2nd-call test.",
+    "advice_history append uses $push with $position=0 and $slice=20 — sane (cap at 20, most-recent-first). last_advice + last_advice_at set in the same update.",
+    "Note: advise-person catches ObjectId() failures only inside the history block; main path is safe because the conditional gates on req.person_note_id being a string.",
+    "server.py size warning persists (1528 lines)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pepper_clarity_flow.py (NEW)",
+    "/app/backend/tests/test_pepper_advice_and_body.py (made _assert_shape tolerate needs_clarity=true on thin payloads)",
+    "/app/backend/tests/test_batch_d_category_and_vision.py (made blurry-category shape test tolerate needs_clarity=true)"
+  ],
+  "success_rate": {"backend": "100% (142/142)", "frontend": "n/a — backend only"},
+  "seed_data_creation": "Created and DELETED one person-note (TEST_Clarity_Jamie_History) within TestAdviceHistoryAppend; otherwise only ephemeral request-scoped data under user_id=TEST_clarity_user / TEST_advise_person.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Batch 5 clarity-first flow is fully covered by test_pepper_clarity_flow.py. The schema contract: response always includes vibe_read; when needs_clarity=true => clarity_questions has 1-3 non-empty strings + the_move/what_to_say null/empty + watch_out_for [] + verdict='caution'; when needs_clarity=false/absent => the_move non-empty + watch_out_for non-empty list + verdict in {trust|caution|cut}. Two prior tests were patched to honor this conditional shape (no business-logic changes). LLM occasionally returns clarity even on borderline-rich inputs — tests use single-retry guard per agent spec.",
+  "rca_of_issue": "n/a — no bugs found"
+}

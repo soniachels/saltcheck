@@ -162,8 +162,11 @@ class TestAdvisePersonCategory:
             assert key in data, f"Missing key {key} in blurry response: {data}"
         assert data["verdict"] in ("trust", "caution", "cut"), f"Bad verdict: {data['verdict']}"
         assert isinstance(data["watch_out_for"], list)
-        # sanity: not blank
-        assert data["vibe_read"].strip() and data["the_move"].strip()
+        # sanity: not blank. NEW: tolerate needs_clarity=true (LLM may occasionally
+        # request clarity even with risk_notes; schema-only check below).
+        assert data["vibe_read"].strip()
+        if not data.get("needs_clarity"):
+            assert data["the_move"] and data["the_move"].strip()
         # Loose check for boundary/lane vocabulary — non-blocking
         blob = (str(data.get("vibe_read", "")) + " " + str(data.get("the_move", "")) + " "
                 + " ".join(data.get("watch_out_for") or [])).lower()
