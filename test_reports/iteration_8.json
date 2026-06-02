@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 8 — Batch 2: Medications tracking (separate collection with frequency, schedule, intake history). Backend-only. All 18 new tests in /app/backend/tests/test_medications.py PASS (8 CRUD + 5 take/undo + 5 regression). Full backend suite now 132/133 passing — the one pre-existing failure (test_priorities_done.py::test_post_then_get_then_put_priorities_done) is the known data-pollution flake from prior iterations (POST /api/daily-entries is non-upsert and shares user_id+date across runs), NOT introduced by this batch and unrelated to medications. Verified: (a) POST /api/medications?user_id=… for weekly/morning, daily/bedtime, as_needed/no-time-of-day all return 200 with id, name, dosage, frequency, time_of_day, notes, intake_history=[], created_at, updated_at; (b) GET /api/medications/{user_id} returns all 3 sorted by created_at desc; (c) PUT changes dosage 0.5mg→1.0mg and is persisted in GET; (d) DELETE removes the third med, GET shows 2 left; (e) frequency='biweekly' is rejected with 422 (Literal validator); (f) DELETE on a valid-format-but-nonexistent ObjectId returns 404; (g) POST /api/medications/{id}/take with {date:'2026-05-15'} adds one entry; re-posting same date does NOT duplicate (still 1 entry); POST /take with {} defaults to today and now has 2 entries; DELETE /take?date=2026-05-15 leaves only today; DELETE /take (no date param) defaults to today and clears intake_history to []; (h) Regression: body_logs medications field still accepts List[str] and round-trips (backward compat preserved); tasks, daily-entries, money-entries, person-notes endpoints all healthy.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "Carry-over from iter 7",
+        "issue": "POST /api/daily-entries is plain insert_one (not upsert keyed on user_id+date) → cross-run duplicates cause test_priorities_done flake. Pre-existing, unrelated to Batch 2."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "ObjectId() casts in PUT/DELETE on non-medications endpoints still 500 on malformed ids. Medications endpoints (PUT/DELETE/POST take/DELETE take) DO wrap ObjectId() in try/except → return 404. Recommend same pattern elsewhere."
+      },
+      {
+        "endpoint": "Carry-over",
+        "issue": "server.py is now ~1500 lines — exceeds the 700-line guideline. Consider splitting into routers (medications, pepper, body, money, …)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_medications.py",
+    "/app/test_reports/pytest/pytest_iter8_medications.xml",
+    "/app/test_reports/pytest/pytest_iter8_full.xml"
+  ],
+  "action_items": [
+    "None blocking. Batch 2 ships clean.",
+    "Optional carry-over from iter 7: convert POST /api/daily-entries to upsert keyed by (user_id, date) — would eliminate the single remaining flaky test and the cross-run dedup hazard.",
+    "Optional: replicate the medications-endpoint ObjectId try/except pattern across tasks/projects/body-logs/money-entries/person-notes PUT/DELETE/GET-by-id endpoints so malformed ids return 404 instead of 500."
+  ],
+  "critical_code_review_comments": [
+    "Medications endpoints correctly wrap ObjectId(med_id) in try/except → 404. Good pattern; other endpoints in server.py still 500 on bad ids — consider unifying.",
+    "Test-clock gotcha worth noting: the container UTC date is 2026-06-02 (matches the batch's example date). Using '2026-06-02' as the 'specific date' in /take tests caused false dedupe collisions with the default-today branch on first run. Switched test to PAST_DATE='2026-05-15'. The server logic is correct — the test inputs were ambiguous, now corrected.",
+    "POST /api/medications/{id}/take dedupes by exact date string, sorts desc, then caps at 365 — good guardrails. intake_history starts as [] (initialized in create_medication), so MedicationResponse model never sees a missing field.",
+    "MedicationCreate uses Literal[daily|weekly|monthly|as_needed] → 422 on 'biweekly' as expected.",
+    "Regression on body_logs.medications: BodyLogCreate.medications is Optional[List[str]] — still accepts ['Ozempic 0.5mg weekly', 'Vitamin D'] and round-trips through GET. Backward compatibility intact."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_medications.py (new — 18 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% on Batch 2 (18/18) — Full suite: 132/133 (one pre-existing data-pollution flake, unrelated)",
+    "frontend": "not_tested"
+  },
+  "seed_data_creation": "Time-suffixed user_ids per class: TEST_med_user_<ts> (CRUD), <ts>_take (take/undo), TEST_med_regression_<ts>, TEST_med_reg_tasks_<ts>, TEST_med_reg_daily_<ts>, TEST_med_reg_money_<ts>, TEST_med_reg_pn_<ts>. Created meds/tasks/person-notes are cleaned up via DELETE in teardown_class / inline. Daily-entries / body-logs / money-entries leak by design (no DELETE endpoints exist) but use unique users so no interference.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Container UTC clock is 2026-06-02 — do NOT use '2026-06-02' as a 'specific past date' when also testing the 'defaults to today' branch; they will collide and dedupe will collapse them into one entry. /app/backend/tests/test_medications.py uses PAST_DATE='2026-05-15' to avoid this. Single remaining flaky test (test_priorities_done.py::test_post_then_get_then_put_priorities_done) is unrelated and pre-existing — passes on isolated rerun.",
+  "rca_of_issue": "Not a bug — initial test red was caused by the container clock matching the test fixture date ('2026-06-02'). When test_03 sent {} to default to today, the server's dedupe logic (`history = [h for h in history if h.get('date') != target_date]; history.append(...)`) correctly collapsed today's new entry against the existing 2026-06-02 entry. Test was rewritten to use PAST_DATE='2026-05-15' which is unambiguously not today. After fix, all 18 medications tests pass. The /take dedupe + undo + 365-day cap logic is correct."
+}

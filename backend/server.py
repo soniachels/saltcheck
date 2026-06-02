@@ -41,6 +41,7 @@ projects_collection = db["projects"]
 tasks_collection = db["tasks"]
 money_entries_collection = db["money_entries"]
 body_logs_collection = db["body_logs"]
+medications_collection = db["medications"]
 person_notes_collection = db["person_notes"]
 ai_checkins_collection = db["ai_checkins"]
 
@@ -1368,6 +1369,142 @@ Output JSON only:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PEPPER couldn't read it: {str(e)}")
+
+
+# ============================================================================
+# MEDICATIONS — daily/weekly/monthly schedule + intake history
+# ============================================================================
+
+class MedicationCreate(BaseModel):
+    name: str
+    dosage: Optional[str] = None  # "10mg", "2 pills", etc
+    frequency: Literal["daily", "weekly", "monthly", "as_needed"] = "daily"
+    time_of_day: Optional[str] = None  # "morning" / "evening" / "8:00 PM"
+    days_of_week: Optional[List[str]] = None  # for weekly
+    day_of_month: Optional[int] = None  # for monthly (1-31)
+    start_date: Optional[str] = None
+    notes: Optional[str] = None
+    active: bool = True
+
+
+class MedicationResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    dosage: Optional[str] = None
+    frequency: str
+    time_of_day: Optional[str] = None
+    days_of_week: Optional[List[str]] = None
+    day_of_month: Optional[int] = None
+    start_date: Optional[str] = None
+    notes: Optional[str] = None
+    active: bool = True
+    intake_history: List[dict] = []  # [{date: "YYYY-MM-DD", taken_at: ISO}]
+    created_at: datetime
+    updated_at: datetime
+
+
+@app.post("/api/medications", response_model=MedicationResponse)
+async def create_medication(med: MedicationCreate, user_id: str = "default_user"):
+    doc = med.dict()
+    doc["user_id"] = user_id
+    doc["intake_history"] = []
+    doc["created_at"] = datetime.utcnow()
+    doc["updated_at"] = datetime.utcnow()
+    r = await medications_collection.insert_one(doc)
+    new_med = await medications_collection.find_one({"_id": r.inserted_id})
+    new_med["id"] = str(new_med.pop("_id"))
+    return MedicationResponse(**new_med)
+
+
+@app.get("/api/medications/{user_id}", response_model=List[MedicationResponse])
+async def get_medications(user_id: str):
+    cursor = medications_collection.find({"user_id": user_id}).sort("created_at", -1)
+    out = []
+    async for d in cursor:
+        d["id"] = str(d.pop("_id"))
+        out.append(MedicationResponse(**d))
+    return out
+
+
+@app.put("/api/medications/{med_id}", response_model=MedicationResponse)
+async def update_medication(med_id: str, med: MedicationCreate):
+    try:
+        oid = ObjectId(med_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Med not found")
+    doc = med.dict()
+    doc["updated_at"] = datetime.utcnow()
+    r = await medications_collection.update_one({"_id": oid}, {"$set": doc})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Med not found")
+    updated = await medications_collection.find_one({"_id": oid})
+    updated["id"] = str(updated.pop("_id"))
+    return MedicationResponse(**updated)
+
+
+@app.delete("/api/medications/{med_id}")
+async def delete_medication(med_id: str):
+    try:
+        oid = ObjectId(med_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Med not found")
+    r = await medications_collection.delete_one({"_id": oid})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Med not found")
+    return {"deleted": True}
+
+
+class MedTakePayload(BaseModel):
+    date: Optional[str] = None  # YYYY-MM-DD; defaults to today
+
+
+@app.post("/api/medications/{med_id}/take", response_model=MedicationResponse)
+async def mark_med_taken(med_id: str, payload: MedTakePayload):
+    """Record that the user took this med on the given date."""
+    try:
+        oid = ObjectId(med_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Med not found")
+    target_date = payload.date or datetime.utcnow().strftime("%Y-%m-%d")
+    med = await medications_collection.find_one({"_id": oid})
+    if not med:
+        raise HTTPException(status_code=404, detail="Med not found")
+    history = med.get("intake_history") or []
+    # Don't duplicate within the same date
+    history = [h for h in history if h.get("date") != target_date]
+    history.append({"date": target_date, "taken_at": datetime.utcnow().isoformat()})
+    history.sort(key=lambda h: h.get("date"), reverse=True)
+    history = history[:365]  # cap at a year
+    await medications_collection.update_one(
+        {"_id": oid},
+        {"$set": {"intake_history": history, "updated_at": datetime.utcnow()}},
+    )
+    updated = await medications_collection.find_one({"_id": oid})
+    updated["id"] = str(updated.pop("_id"))
+    return MedicationResponse(**updated)
+
+
+@app.delete("/api/medications/{med_id}/take", response_model=MedicationResponse)
+async def undo_med_taken(med_id: str, date: Optional[str] = None):
+    """Remove the intake record for the given date (undo)."""
+    try:
+        oid = ObjectId(med_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Med not found")
+    target_date = date or datetime.utcnow().strftime("%Y-%m-%d")
+    med = await medications_collection.find_one({"_id": oid})
+    if not med:
+        raise HTTPException(status_code=404, detail="Med not found")
+    history = med.get("intake_history") or []
+    history = [h for h in history if h.get("date") != target_date]
+    await medications_collection.update_one(
+        {"_id": oid},
+        {"$set": {"intake_history": history, "updated_at": datetime.utcnow()}},
+    )
+    updated = await medications_collection.find_one({"_id": oid})
+    updated["id"] = str(updated.pop("_id"))
+    return MedicationResponse(**updated)
 
 
 if __name__ == "__main__":

@@ -46,20 +46,34 @@ export default function BodyScreen() {
 
   // Editor states
   const [cycleEditor, setCycleEditor] = useState(false);
-  const [medEditor, setMedEditor] = useState(false);
+  const [medEditor, setMedEditor] = useState<{ open: boolean; editingId: string | null }>({ open: false, editingId: null });
   const [apptEditor, setApptEditor] = useState(false);
   const [symptomEditor, setSymptomEditor] = useState(false);
   const [cycleForm, setCycleForm] = useState({ period_started_on: '', period_length_days: '', cycle_length_days: '28' });
-  const [medForm, setMedForm] = useState('');
+  const [medForm, setMedForm] = useState({
+    name: '',
+    dosage: '',
+    frequency: 'daily' as 'daily' | 'weekly' | 'monthly' | 'as_needed',
+    time_of_day: '',
+    notes: '',
+  });
+  const [meds, setMeds] = useState<any[]>([]);
   const [apptForm, setApptForm] = useState({ label: '', date: '' });
   const [symptomForm, setSymptomForm] = useState('');
 
-  useFocusEffect(useCallback(() => { loadLogs(); }, []));
+  useFocusEffect(useCallback(() => { loadLogs(); loadMeds(); }, []));
 
   const loadLogs = async () => {
     try {
       const res = await apiClient.get(`/body-logs/${currentUserId}`);
       setBodyLogs(res.data);
+    } catch (e) { console.error(e); }
+  };
+
+  const loadMeds = async () => {
+    try {
+      const res = await apiClient.get(`/medications/${currentUserId}`);
+      setMeds(res.data || []);
     } catch (e) { console.error(e); }
   };
 
@@ -90,25 +104,30 @@ export default function BodyScreen() {
   };
 
   const askPepper = async () => {
-    if (!latest) {
+    if (!latest && meds.length === 0) {
       Alert.alert('Log something first', 'PEPPER needs notes to read.');
       return;
     }
     setAdvice(null);
     setAdviceLoading(true);
     try {
+      const medsContext = meds.map((m: any) => {
+        const takenToday = (m.intake_history || []).some((h: any) => h.date === today);
+        const { streak } = computeStreak(m);
+        return `${m.name}${m.dosage ? ` ${m.dosage}` : ''} (${m.frequency}${m.time_of_day ? ` ${m.time_of_day}` : ''}) — ${takenToday ? 'TAKEN today' : 'not taken today'}${streak > 0 ? `, ${streak}d streak` : ''}`;
+      });
       const res = await apiClient.post(`/pepper/advise-body?user_id=${currentUserId}`, {
-        sleep: latest.sleep,
-        appetite: latest.appetite,
-        symptoms: latest.symptoms,
-        mood: latest.mood,
-        water: latest.water,
-        period_started_on: latest.period_started_on,
-        period_length_days: latest.period_length_days,
-        cycle_length_days: latest.cycle_length_days,
-        medications: latest.medications,
-        appointments: latest.appointments,
-        notes: latest.notes,
+        sleep: latest?.sleep,
+        appetite: latest?.appetite,
+        symptoms: latest?.symptoms,
+        mood: latest?.mood,
+        water: latest?.water,
+        period_started_on: latest?.period_started_on,
+        period_length_days: latest?.period_length_days,
+        cycle_length_days: latest?.cycle_length_days,
+        medications: medsContext.length > 0 ? medsContext : latest?.medications,
+        appointments: latest?.appointments,
+        notes: latest?.notes,
         spice_level: pepperSpiceLevel,
       });
       setAdvice(res.data);
@@ -135,22 +154,94 @@ export default function BodyScreen() {
     loadLogs();
   };
 
-  const addMed = async () => {
-    if (!medForm.trim()) return;
-    const base = latest && latest.date === today ? latest : null;
-    const meds = [...(base?.medications || []), medForm.trim()];
-    await upsertField('medications', meds);
-    setMedForm('');
-    setMedEditor(false);
+  const openMedEditor = (med?: any) => {
+    if (med) {
+      setMedForm({
+        name: med.name || '',
+        dosage: med.dosage || '',
+        frequency: med.frequency || 'daily',
+        time_of_day: med.time_of_day || '',
+        notes: med.notes || '',
+      });
+      setMedEditor({ open: true, editingId: med.id });
+    } else {
+      setMedForm({ name: '', dosage: '', frequency: 'daily', time_of_day: '', notes: '' });
+      setMedEditor({ open: true, editingId: null });
+    }
   };
 
-  const removeMed = async (i: number) => {
-    if (!latest) return;
-    const meds = (latest.medications || []).filter((_: any, idx: number) => idx !== i);
-    const payload = { ...latest, medications: meds };
-    delete (payload as any).id; delete (payload as any).user_id; delete (payload as any).created_at; delete (payload as any).updated_at;
-    await apiClient.put(`/body-logs/${latest.id}`, payload);
-    loadLogs();
+  const saveMed = async () => {
+    if (!medForm.name.trim()) return;
+    const payload: any = {
+      name: medForm.name.trim(),
+      dosage: medForm.dosage.trim() || undefined,
+      frequency: medForm.frequency,
+      time_of_day: medForm.time_of_day || undefined,
+      notes: medForm.notes.trim() || undefined,
+      active: true,
+    };
+    try {
+      if (medEditor.editingId) {
+        await apiClient.put(`/medications/${medEditor.editingId}`, payload);
+      } else {
+        await apiClient.post(`/medications?user_id=${currentUserId}`, payload);
+      }
+      setMedEditor({ open: false, editingId: null });
+      setMedForm({ name: '', dosage: '', frequency: 'daily', time_of_day: '', notes: '' });
+      loadMeds();
+    } catch (e) {
+      console.error('saveMed err', e);
+    }
+  };
+
+  const removeMed = async (medId: string) => {
+    try {
+      await apiClient.delete(`/medications/${medId}`);
+      setMedEditor({ open: false, editingId: null });
+      loadMeds();
+    } catch (e) { console.error(e); }
+  };
+
+  const toggleMedTaken = async (med: any) => {
+    const takenToday = (med.intake_history || []).some((h: any) => h.date === today);
+    try {
+      if (takenToday) {
+        await apiClient.delete(`/medications/${med.id}/take?date=${today}`);
+      } else {
+        await apiClient.post(`/medications/${med.id}/take`, { date: today });
+      }
+      loadMeds();
+    } catch (e) { console.error(e); }
+  };
+
+  // 7-day streak
+  const computeStreak = (med: any): { taken7: number; streak: number } => {
+    const history: any[] = med.intake_history || [];
+    const datesSet = new Set(history.map((h) => h.date));
+    let taken7 = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const iso = d.toISOString().split('T')[0];
+      if (datesSet.has(iso)) taken7++;
+    }
+    let streak = 0;
+    let d = new Date();
+    while (true) {
+      const iso = d.toISOString().split('T')[0];
+      if (datesSet.has(iso)) {
+        streak++;
+        d.setDate(d.getDate() - 1);
+      } else {
+        // If today isn't taken, streak is still last consecutive
+        if (streak === 0 && d.toDateString() === new Date().toDateString()) {
+          d.setDate(d.getDate() - 1);
+          continue;
+        }
+        break;
+      }
+    }
+    return { taken7, streak };
   };
 
   const addAppt = async () => {
@@ -267,22 +358,46 @@ export default function BodyScreen() {
           onPress={() => { setSymptomForm(latest?.symptoms || ''); setSymptomEditor(true); }}
         />
 
-        {/* Meds */}
-        <Text style={styles.sectionLabel}>MEDS & JABS.</Text>
-        {(latest?.medications || []).map((m: string, i: number) => (
-          <CategoryCard
-            key={i}
-            title={m}
-            icon="medical"
-            variant="dark"
-            rightSlot={
-              <TouchableOpacity onPress={() => removeMed(i)}>
-                <Ionicons name="close-circle" size={22} color={Colors.steelBlueGrey} />
-              </TouchableOpacity>
-            }
-          />
-        ))}
-        <CategoryCard title="+ ADD MED" subtitle="Ozempic, vitamins, pills" icon="add-circle" variant="lime" onPress={() => setMedEditor(true)} />
+        {/* Meds — full tracker with schedule + intake history */}
+        <Text style={styles.sectionLabel}>MEDICATIONS.</Text>
+        <Text style={styles.sectionHint}>tap "TAKE" when you take it. pepper tracks the streak.</Text>
+        {meds.map((m: any) => {
+          const takenToday = (m.intake_history || []).some((h: any) => h.date === today);
+          const { taken7, streak } = computeStreak(m);
+          const freqLabel = m.frequency === 'as_needed' ? 'PRN' : m.frequency.toUpperCase();
+          const timeLabel = m.time_of_day ? ` · ${m.time_of_day}` : '';
+          const dosageLabel = m.dosage ? `${m.dosage}  ·  ` : '';
+          const streakLabel = streak > 0 ? `🔥 ${streak}d streak` : taken7 > 0 ? `${taken7}/7 this week` : 'not yet this week';
+          return (
+            <CategoryCard
+              key={m.id}
+              title={m.name}
+              subtitle={`${dosageLabel}${freqLabel}${timeLabel}  ·  ${streakLabel}`}
+              icon="medical"
+              variant={takenToday ? 'lime' : 'dark'}
+              onPress={() => openMedEditor(m)}
+              rightSlot={
+                <TouchableOpacity
+                  onPress={() => toggleMedTaken(m)}
+                  style={[styles.takeBtn, takenToday && styles.takeBtnDone]}
+                >
+                  {takenToday ? (
+                    <Ionicons name="checkmark" size={18} color={Colors.inkBlack} />
+                  ) : (
+                    <Text style={styles.takeBtnText}>TAKE</Text>
+                  )}
+                </TouchableOpacity>
+              }
+            />
+          );
+        })}
+        <CategoryCard
+          title="+ ADD MEDICATION"
+          subtitle="name, dosage, daily/weekly/monthly/as-needed"
+          icon="add-circle"
+          variant="lilac"
+          onPress={() => openMedEditor()}
+        />
 
         {/* Appointments */}
         <Text style={styles.sectionLabel}>APPOINTMENTS.</Text>
@@ -411,19 +526,63 @@ export default function BodyScreen() {
         </View>
       </Modal>
 
-      {/* Med editor */}
-      <Modal visible={medEditor} animationType="slide" transparent>
+      {/* Med editor — full schedule + dosage */}
+      <Modal visible={medEditor.open} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.editorScroll}>
+          <ScrollView contentContainerStyle={styles.editorScroll}>
             <View style={styles.editorCard}>
-              <Text style={styles.editorTitle}>NEW MED</Text>
-              <Input value={medForm} onChangeText={setMedForm} placeholder="e.g. Ozempic 0.5mg weekly" autoFocus />
+              <Text style={styles.editorTitle}>
+                {medEditor.editingId ? 'EDIT MEDICATION' : 'NEW MEDICATION'}
+              </Text>
+              <Input
+                label="NAME"
+                value={medForm.name}
+                onChangeText={(t) => setMedForm({ ...medForm, name: t })}
+                placeholder="Ozempic, Vitamin D, Lexapro..."
+                autoFocus
+              />
+              <Input
+                label="DOSAGE"
+                value={medForm.dosage}
+                onChangeText={(t) => setMedForm({ ...medForm, dosage: t })}
+                placeholder="0.5mg / 2 pills / 1 capsule"
+              />
+              <ChipPicker
+                label="FREQUENCY"
+                options={['daily', 'weekly', 'monthly', 'as_needed']}
+                value={medForm.frequency}
+                onChange={(v) => setMedForm({ ...medForm, frequency: v as any })}
+                variant="lilac"
+                testIDPrefix="med-freq"
+              />
+              <ChipPicker
+                label="TIME OF DAY"
+                options={['morning', 'midday', 'evening', 'bedtime', 'anytime']}
+                value={medForm.time_of_day || 'anytime'}
+                onChange={(v) => setMedForm({ ...medForm, time_of_day: v === 'anytime' ? '' : v })}
+                variant="lilac"
+                testIDPrefix="med-time"
+              />
+              <Input
+                label="NOTES"
+                value={medForm.notes}
+                onChangeText={(t) => setMedForm({ ...medForm, notes: t })}
+                placeholder="with food, side effects to watch, etc"
+              />
               <View style={styles.editorActions}>
-                <Button title="CANCEL" onPress={() => setMedEditor(false)} variant="ghost" />
-                <Button title="ADD" onPress={addMed} variant="primary" />
+                <Button title="CANCEL" onPress={() => setMedEditor({ open: false, editingId: null })} variant="ghost" />
+                <Button title="SAVE" onPress={saveMed} variant="primary" />
               </View>
+              {medEditor.editingId && (
+                <Button
+                  title="DELETE"
+                  onPress={() => removeMed(medEditor.editingId!)}
+                  variant="danger"
+                  style={{ marginTop: Spacing.md }}
+                />
+              )}
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
 
@@ -493,4 +652,25 @@ const styles = StyleSheet.create({
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
   editorTitle: { fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 1, marginBottom: Spacing.lg },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
+  takeBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.charcoalRaised,
+    borderWidth: 1,
+    borderColor: Colors.softSpiceLilac,
+    minWidth: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  takeBtnDone: {
+    backgroundColor: Colors.pickleLime,
+    borderColor: Colors.pickleLime,
+  },
+  takeBtnText: {
+    color: Colors.softSpiceLilac,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
 });
