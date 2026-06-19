@@ -7,7 +7,11 @@ import {
   TouchableOpacity,
   Modal,
   Alert,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,7 +22,12 @@ import { Button } from '../../src/components/Button';
 import { Input } from '../../src/components/Input';
 import { DatePicker } from '../../src/components/DatePicker';
 import { CompletedCalendar } from '../../src/components/CompletedCalendar';
+import { DateCarousel } from '../../src/components/DateCarousel';
 import { scheduleReengagement } from '../../src/utils/pepperNudges';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
@@ -40,6 +49,13 @@ export default function TodayScreen() {
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [expandedLoops, setExpandedLoops] = useState<Record<string, boolean>>({});
+
+  const toggleExpand = (id: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.create(220, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
+    setExpandedLoops((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
   const [overdueNudgeSeed] = useState(() => Math.floor(Math.random() * 100));
 
   const today = new Date().toISOString().split('T')[0];
@@ -57,7 +73,7 @@ export default function TodayScreen() {
   const loadAll = async () => {
     try {
       const [entryRes, tasksRes] = await Promise.all([
-        apiClient.get(`/daily-entries/${currentUserId}/${today}`).catch(() => ({ data: null })),
+        apiClient.get(`/daily-entries/${currentUserId}/${selectedDate}`).catch(() => ({ data: null })),
         apiClient.get(`/tasks/${currentUserId}`).catch(() => ({ data: [] })),
       ]);
       setTodayEntry(entryRes.data);
@@ -71,15 +87,15 @@ export default function TodayScreen() {
     loadAll();
     // User is active again — reset PEPPER's away-clock / mood ladder.
     if (notifications?.enabled) scheduleReengagement().catch(() => {});
-  }, [notifications?.enabled]));
-  useEffect(() => { loadAll(); }, []);
+  }, [notifications?.enabled, selectedDate]));
+  useEffect(() => { loadAll(); }, [selectedDate]);
 
   const toggleCheck = async (field: string, current: boolean) => {
     if (!todayEntry) {
       // Create a minimal entry first
       const created = await apiClient.post(
         `/daily-entries?user_id=${currentUserId}`,
-        { date: today, [field]: !current }
+        { date: selectedDate, [field]: !current }
       );
       setTodayEntry(created.data);
       return;
@@ -298,6 +314,7 @@ export default function TodayScreen() {
 
   // Order by time-of-day: timed tasks first (chronological), untimed last.
   const byTime = (a: any, b: any) => (a.time || '99:99').localeCompare(b.time || '99:99');
+  const statusGlyph = (s: string) => (s === 'in_progress' ? '◐' : s === 'waiting' ? '◑' : '○');
 
   const activeTasks = tasks.filter((t) => !t.parked && t.status !== 'done');
   const doneTasks = tasks.filter((t) => t.status === 'done');
@@ -311,6 +328,11 @@ export default function TodayScreen() {
   const otherActiveTasks = activeTasks.filter(
     (t) => !t.deadline || t.deadline > today
   ).sort(byTime);
+
+  // Day timeline = tasks with a time; everything else is an open loop.
+  const timedTasks = activeTasks.filter((t) => t.time).sort(byTime);
+  const untimedTasks = activeTasks.filter((t) => !t.time).sort(byTime);
+  const selectedIsToday = selectedDate === today;
 
   // Toggle a subtask's done flag and persist.
   const toggleSubtask = async (task: any, idx: number) => {
@@ -347,6 +369,13 @@ export default function TodayScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* atmospheric gradient blobs behind content */}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <LinearGradient colors={['rgba(196,25,30,0.18)', 'transparent']} style={[styles.blob, { top: -60, right: -40 }]} />
+        <LinearGradient colors={['rgba(124,107,166,0.16)', 'transparent']} style={[styles.blob, { top: 280, left: -70 }]} />
+        <LinearGradient colors={['rgba(168,189,79,0.12)', 'transparent']} style={[styles.blob, { bottom: 30, right: -50 }]} />
+      </View>
+
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Hero */}
         <View style={styles.hero}>
@@ -358,65 +387,96 @@ export default function TodayScreen() {
           <Text style={styles.heroSub}>{greeting.vibe}</Text>
         </View>
 
+        {/* Date planner strip */}
+        <DateCarousel selected={selectedDate} today={today} onSelect={setSelectedDate} />
+        {!selectedIsToday && (
+          <TouchableOpacity style={styles.backToToday} onPress={() => setSelectedDate(today)}>
+            <Ionicons name="arrow-back" size={12} color={Colors.brightRed} />
+            <Text style={styles.backToTodayText}>viewing another day · back to today</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Floating PEPPER reaction */}
         {pepperReaction && (
-          <PepperBubble label="* PEPPER" variant="red" small style={{ marginBottom: Spacing.md }}>
+          <PepperBubble label="* PEPPER" variant="red" small style={{ marginTop: Spacing.sm }}>
             {pepperReaction}
           </PepperBubble>
         )}
 
-        {/* Next Sane Step (if PEPPER's been here) */}
-        {todayEntry?.next_sane_step && (
-          <CategoryCard
-            title={todayEntry.next_sane_step}
-            subtitle="NEXT SANE STEP"
-            icon="flame"
-            variant="red"
-            large
-          />
+        {/* PEPPER verdict */}
+        <LinearGradient
+          colors={overdueTasks.length > 0 ? ['rgba(255,0,54,0.22)', 'rgba(18,16,20,0.5)'] : ['rgba(196,25,30,0.14)', 'rgba(18,16,20,0.5)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.verdict}
+        >
+          <Text style={styles.verdictLabel}>PEPPER'S VERDICT</Text>
+          <Text style={styles.verdictMain}>
+            {todayEntry?.next_sane_step
+              || (priorities.length > 0 ? 'lock the top 3. ignore the rest.' : "dump to the flame. i'll cut it.")}
+          </Text>
+          <View style={styles.verdictChips}>
+            {priorities.length > 0 && (
+              <View style={styles.verdictChip}>
+                <Text style={styles.verdictChipText}>{prioritiesDone.filter(Boolean).length}/{Math.min(priorities.length, 3)} top 3</Text>
+              </View>
+            )}
+            {overdueTasks.length > 0 && (
+              <View style={[styles.verdictChip, styles.verdictChipUrgent]}>
+                <Text style={[styles.verdictChipText, { color: Colors.saltBone }]}>{overdueTasks.length} overdue</Text>
+              </View>
+            )}
+            {timedTasks.length > 0 && (
+              <View style={styles.verdictChip}>
+                <Text style={styles.verdictChipText}>{timedTasks.length} on the clock</Text>
+              </View>
+            )}
+          </View>
+        </LinearGradient>
+
+        {/* Overdue quick-actions */}
+        {overdueTasks.length > 0 && (
+          <View style={styles.actionList}>
+            {overdueTasks.slice(0, 3).map((t) => (
+              <View key={t.id} style={styles.actionRow}>
+                <View style={styles.actionDotRed} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.actionTitle} numberOfLines={1}>{t.title}</Text>
+                  <Text style={styles.actionMetaRed}>overdue · {t.deadline}</Text>
+                </View>
+                <TouchableOpacity style={styles.didItBtn} onPress={() => markLoopDone(t)}>
+                  <Text style={styles.didItText}>DID IT</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.nahBtn} onPress={() => reopenLoop(t)}>
+                  <Text style={styles.nahText}>NAH</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
         )}
 
         {/* Top 3 — now checkable */}
         {priorities.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>TOP 3.</Text>
-            <Text style={styles.sectionHint}>not top 47. tap to close one.</Text>
+            <Text style={styles.sectionHint}>the only three that matter. tap to close one.</Text>
             {priorities.slice(0, 3).map((p: string, i: number) => {
               const done = !!prioritiesDone[i];
+              const hero = i === 0 && !done;
               return (
                 <TouchableOpacity
                   key={i}
-                  style={[
-                    styles.priorityCard,
-                    done && styles.priorityCardDone,
-                    !done && i === 0 && styles.priorityCardLime,
-                  ]}
+                  style={[styles.p3, hero && styles.p3Hero, done && styles.p3Done]}
                   onPress={() => togglePriorityDone(i)}
                   activeOpacity={0.85}
                   testID={`priority-${i}`}
                 >
-                  <View
-                    style={[
-                      styles.priorityCheckbox,
-                      done && styles.priorityCheckboxDone,
-                    ]}
-                  >
-                    {done ? (
-                      <Ionicons name="checkmark" size={18} color={Colors.inkBlack} />
-                    ) : (
-                      <Text style={[
-                        styles.priorityNum,
-                        i === 0 && { color: Colors.inkBlack },
-                      ]}>{i + 1}</Text>
-                    )}
+                  <View style={[styles.p3Num, hero && styles.p3NumHero, done && styles.p3NumDone]}>
+                    {done
+                      ? <Ionicons name="checkmark" size={16} color={Colors.inkBlack} />
+                      : <Text style={[styles.p3NumText, hero && { color: Colors.inkBlack }]}>{i + 1}</Text>}
                   </View>
-                  <Text
-                    style={[
-                      styles.priorityText,
-                      i === 0 && !done && { color: Colors.inkBlack },
-                      done && styles.priorityTextDone,
-                    ]}
-                  >
+                  <Text style={[styles.p3Text, hero && { color: Colors.inkBlack }, done && styles.p3TextDone]} numberOfLines={2}>
                     {p}
                   </Text>
                 </TouchableOpacity>
@@ -441,62 +501,6 @@ export default function TodayScreen() {
               </PepperBubble>
             )}
           </>
-        )}
-
-        {/* PEPPER overdue nudge */}
-        {overdueTasks.length > 0 && (
-          <View style={styles.nudgeWrap}>
-            <PepperBubble label="* PEPPER" variant="red">
-              {loopOverdueNudge(overdueNudgeSeed)} {overdueTasks.length === 1
-                ? `"${overdueTasks[0].title}" was due ${overdueTasks[0].deadline}.`
-                : `${overdueTasks.length} loops are past due.`}
-            </PepperBubble>
-            {overdueTasks.slice(0, 3).map((t) => (
-              <View key={t.id} style={styles.nudgeRow}>
-                <View style={styles.nudgeTextWrap}>
-                  <Text style={styles.nudgeTitle}>{t.title}</Text>
-                  <Text style={styles.nudgeMeta}>due {t.deadline}</Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.nudgeBtn, styles.nudgeBtnYes]}
-                  onPress={() => markLoopDone(t)}
-                >
-                  <Text style={styles.nudgeBtnYesText}>DID IT</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.nudgeBtn, styles.nudgeBtnNo]}
-                  onPress={() => reopenLoop(t)}
-                >
-                  <Text style={styles.nudgeBtnNoText}>NAH</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {/* Due today */}
-        {dueTodayTasks.length > 0 && (
-          <View style={styles.nudgeWrap}>
-            <PepperBubble label="* PEPPER" variant="lilac">
-              {loopDueTodayNudge(overdueNudgeSeed)} {dueTodayTasks.length === 1
-                ? `"${dueTodayTasks[0].title}".`
-                : `${dueTodayTasks.length} things on the clock.`}
-            </PepperBubble>
-            {dueTodayTasks.map((t) => (
-              <View key={t.id} style={styles.nudgeRow}>
-                <View style={styles.nudgeTextWrap}>
-                  <Text style={styles.nudgeTitle}>{t.title}</Text>
-                  <Text style={styles.nudgeMeta}>due today</Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.nudgeBtn, styles.nudgeBtnYes]}
-                  onPress={() => markLoopDone(t)}
-                >
-                  <Text style={styles.nudgeBtnYesText}>DID IT</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
         )}
 
         {/* Survival basics */}
@@ -526,6 +530,34 @@ export default function TodayScreen() {
           })}
         </View>
 
+        {/* Day timeline */}
+        {timedTasks.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>DAY TIMELINE.</Text>
+            <Text style={styles.sectionHint}>your day, roughly in order.</Text>
+            <View style={styles.timeline}>
+              {timedTasks.map((t, idx) => (
+                <View key={t.id} style={styles.tlRow}>
+                  <Text style={styles.tlTime}>{t.time}</Text>
+                  <View style={styles.tlLineCol}>
+                    <View style={styles.tlDot} />
+                    {idx < timedTasks.length - 1 && <View style={styles.tlLine} />}
+                  </View>
+                  <TouchableOpacity style={styles.tlCard} activeOpacity={0.85} onPress={() => openTaskEditor(t)}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.tlCardTitle} numberOfLines={1}>{t.title}</Text>
+                      {t.next_action ? <Text style={styles.tlCardSub} numberOfLines={1}>→ {t.next_action}</Text> : null}
+                    </View>
+                    <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(t)}>
+                      <Text style={styles.statusChipText}>{statusGlyph(t.status)}</Text>
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
+
         {/* Open Loops (merged) */}
         <View style={styles.loopsHeader}>
           <Text style={styles.sectionLabel}>OPEN LOOPS.</Text>
@@ -537,49 +569,59 @@ export default function TodayScreen() {
           </TouchableOpacity>
         </View>
 
-        {otherActiveTasks.length === 0 && activeTasks.length === 0 ? (
+        {untimedTasks.length === 0 ? (
           <View style={styles.emptyLoops}>
-            <Text style={styles.emptyText}>No loops. Clean kitchen.</Text>
+            <Text style={styles.emptyText}>
+              {timedTasks.length > 0 ? "No loose loops — it's all on the clock." : 'No loops. Clean kitchen.'}
+            </Text>
           </View>
-        ) : otherActiveTasks.length === 0 ? (
-          <Text style={[styles.sectionHint, { marginBottom: Spacing.md }]}>
-            (everything above is on the clock)
-          </Text>
         ) : (
-          otherActiveTasks.map((task) => {
+          untimedTasks.map((task) => {
             const subs = (task.subtasks || []) as { title: string; done: boolean }[];
             const doneCount = subs.filter((s) => s.done).length;
+            const complete = subs.length > 0 && doneCount === subs.length;
+            const expanded = !!expandedLoops[task.id];
+            const nextStep = subs.find((s) => !s.done)?.title;
             return (
-              <View key={task.id}>
-                <CategoryCard
-                  title={`${task.time ? task.time + '  ·  ' : ''}${task.title}`}
-                  subtitle={
-                    subs.length > 0
-                      ? `${doneCount}/${subs.length} steps${task.next_action ? `  ·  → ${task.next_action}` : ''}`
-                      : task.next_action
-                      ? `→ ${task.next_action}`
-                      : task.deadline
-                      ? `due ${task.deadline}`
-                      : 'tap to update'
-                  }
-                  variant="dark"
-                  onPress={() => openTaskEditor(task)}
-                  rightSlot={
-                    <TouchableOpacity onPress={() => cycleStatus(task)} style={styles.statusChip}>
-                      <Text style={styles.statusChipText}>
-                        {task.status === 'in_progress' ? '◐' : task.status === 'waiting' ? '◑' : '○'}
+              <View key={task.id} style={styles.loopCard}>
+                <View style={styles.loopHeaderRow}>
+                  <TouchableOpacity
+                    style={styles.loopMain}
+                    activeOpacity={0.8}
+                    onPress={() => (subs.length > 0 ? toggleExpand(task.id) : openTaskEditor(task))}
+                  >
+                    <View style={[styles.ring, complete && styles.ringDone]}>
+                      {subs.length > 0
+                        ? <Text style={[styles.ringText, complete && { color: Colors.inkBlack }]}>{doneCount}/{subs.length}</Text>
+                        : <View style={styles.ringEmptyDot} />}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.loopTitle} numberOfLines={1}>{task.title}</Text>
+                      <Text style={styles.loopPreview} numberOfLines={1}>
+                        {subs.length > 0
+                          ? (nextStep ? `next: ${nextStep}` : 'all steps done — close it')
+                          : task.next_action ? `→ ${task.next_action}` : task.deadline ? `due ${task.deadline}` : 'tap to edit'}
                       </Text>
-                    </TouchableOpacity>
-                  }
-                />
-                {subs.length > 0 && (
-                  <View style={styles.subtaskNest}>
+                    </View>
+                    {subs.length > 0 && (
+                      <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textSubtle} />
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(task)}>
+                    <Text style={styles.statusChipText}>{statusGlyph(task.status)}</Text>
+                  </TouchableOpacity>
+                </View>
+                {expanded && subs.length > 0 && (
+                  <View style={styles.loopSteps}>
                     {subs.map((st, i) => (
-                      <TouchableOpacity key={i} style={styles.subtaskNestRow} onPress={() => toggleSubtask(task, i)}>
+                      <TouchableOpacity key={i} style={styles.loopStepRow} onPress={() => toggleSubtask(task, i)}>
                         <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
-                        <Text style={[styles.subtaskNestText, st.done && styles.subtaskTextDone]}>{st.title}</Text>
+                        <Text style={[styles.loopStepText, st.done && styles.subtaskTextDone]}>{st.title}</Text>
                       </TouchableOpacity>
                     ))}
+                    <TouchableOpacity onPress={() => openTaskEditor(task)}>
+                      <Text style={styles.loopEdit}>EDIT LOOP →</Text>
+                    </TouchableOpacity>
                   </View>
                 )}
               </View>
@@ -909,4 +951,61 @@ const styles = StyleSheet.create({
   subtaskNestRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   subtaskNestText: { fontSize: Typography.fontSize.sm, color: Colors.textSubtle },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
+
+  // --- Redesign additions ---
+  blob: { position: 'absolute', width: 260, height: 260, borderRadius: 130, opacity: 0.9 },
+  backToToday: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: Spacing.xs },
+  backToTodayText: { color: Colors.brightRed, fontSize: Typography.fontSize.xs, fontWeight: '700', letterSpacing: 0.5 },
+
+  verdict: { borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge, marginTop: Spacing.md, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  verdictLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 2, marginBottom: 6 },
+  verdictMain: { fontSize: Typography.fontSize.lg, color: Colors.text, fontWeight: '800', lineHeight: Typography.fontSize.lg * 1.3 },
+  verdictChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginTop: Spacing.md },
+  verdictChip: { backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  verdictChipUrgent: { backgroundColor: Colors.brightRed, borderColor: Colors.brightRed },
+  verdictChipText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '700', letterSpacing: 0.5 },
+
+  actionList: { marginTop: Spacing.sm, gap: Spacing.xs },
+  actionRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: BorderRadius.lg, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, borderWidth: 1, borderColor: 'rgba(255,0,54,0.25)' },
+  actionDotRed: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.brightRed },
+  actionTitle: { color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
+  actionMetaRed: { color: Colors.brightRed, fontSize: Typography.fontSize.xs, fontWeight: '700', letterSpacing: 0.5, marginTop: 1 },
+  didItBtn: { backgroundColor: Colors.pickleLime, borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 6 },
+  didItText: { color: Colors.inkBlack, fontSize: Typography.fontSize.xs, fontWeight: '900', letterSpacing: 0.5 },
+  nahBtn: { paddingHorizontal: Spacing.sm, paddingVertical: 6 },
+  nahText: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, fontWeight: '800' },
+
+  p3: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: BorderRadius.xl, padding: Layout.cardPadding, marginBottom: Spacing.sm, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  p3Hero: { backgroundColor: Colors.pickleLime, borderColor: Colors.pickleLime },
+  p3Done: { opacity: 0.5 },
+  p3Num: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
+  p3NumHero: { backgroundColor: 'rgba(13,13,13,0.2)', borderColor: 'rgba(13,13,13,0.3)' },
+  p3NumDone: { backgroundColor: Colors.pickleLime, borderColor: Colors.pickleLime },
+  p3NumText: { fontSize: Typography.fontSize.md, fontWeight: '900', color: Colors.text },
+  p3Text: { flex: 1, fontSize: Typography.fontSize.md, fontWeight: '700', color: Colors.text },
+  p3TextDone: { textDecorationLine: 'line-through', color: Colors.textSubtle, fontWeight: '500' },
+
+  timeline: { marginTop: Spacing.sm, marginBottom: Spacing.sm },
+  tlRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  tlTime: { width: 52, fontSize: Typography.fontSize.xs, color: Colors.pickleLime, fontWeight: '800', letterSpacing: 0.5, paddingTop: 14 },
+  tlLineCol: { width: 18, alignItems: 'center', alignSelf: 'stretch', paddingTop: 14 },
+  tlDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: Colors.pickleLime, borderWidth: 2, borderColor: Colors.background },
+  tlLine: { flex: 1, width: 0, borderLeftWidth: 1, borderColor: Colors.border, borderStyle: 'dashed', marginTop: 2 },
+  tlCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.sm, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  tlCardTitle: { color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
+  tlCardSub: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, marginTop: 1 },
+
+  loopCard: { backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: BorderRadius.lg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', marginBottom: Spacing.sm },
+  loopHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md },
+  loopMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  ring: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, borderColor: Colors.steelBlueGrey, alignItems: 'center', justifyContent: 'center' },
+  ringDone: { backgroundColor: Colors.pickleLime, borderColor: Colors.pickleLime },
+  ringText: { fontSize: 10, fontWeight: '800', color: Colors.text },
+  ringEmptyDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.steelBlueGrey },
+  loopTitle: { color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
+  loopPreview: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, marginTop: 1 },
+  loopSteps: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, paddingLeft: 58, gap: 6 },
+  loopStepRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  loopStepText: { fontSize: Typography.fontSize.sm, color: Colors.text },
+  loopEdit: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 1, marginTop: 4 },
 });
