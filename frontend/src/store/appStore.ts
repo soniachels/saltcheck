@@ -32,6 +32,7 @@ interface AppState {
 
   // Actions
   setUser: (user: User | null) => void;
+  setAuthUser: (user: User) => void;
   setCurrentUserId: (id: string) => void;
   setIsOnboarded: (value: boolean) => void;
   setReceiptsUnlocked: (value: boolean) => void;
@@ -93,6 +94,14 @@ export const useAppStore = create<AppState>()(
       notifications: defaultNotifications,
 
       setUser: (user) => set({ user }),
+      // Sync an authenticated user into all the places the app reads identity from.
+      setAuthUser: (user) =>
+        set({
+          user,
+          currentUserId: user.id,
+          nickname: user.nickname || user.name || '',
+          pepperSpiceLevel: user.pepper_spice_level,
+        }),
       setCurrentUserId: (id) => set({ currentUserId: id }),
       setIsOnboarded: (value) => set({ isOnboarded: value }),
       setReceiptsUnlocked: (value) => set({ receiptsUnlocked: value }),

@@ -23,6 +23,7 @@ import {
   cancelAllReminders,
 } from '../src/utils/notifications';
 import apiClient from '../src/services/api';
+import { logoutAccount } from '../src/services/auth';
 
 type Spice = 'mild' | 'medium' | 'extra_spicy';
 
@@ -54,6 +55,7 @@ export default function SettingsScreen() {
     setNotifications,
     resetOnboarding,
     currentUserId,
+    logout,
   } = useAppStore();
 
   const [draftNickname, setDraftNickname] = useState(nickname);
@@ -128,6 +130,21 @@ export default function SettingsScreen() {
       setNotifications({ evening_hour: h, evening_minute: m });
       if (notifications.enabled) await applyReminders(next);
     }
+  };
+
+  const handleLogout = () => {
+    Alert.alert('Log out?', 'You can log back in anytime.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log out',
+        style: 'destructive',
+        onPress: async () => {
+          await logoutAccount();
+          logout();
+          router.replace('/auth');
+        },
+      },
+    ]);
   };
 
   const handleResetOnboarding = () => {
@@ -345,6 +362,19 @@ export default function SettingsScreen() {
               </Text>
             </>
           )}
+        </Card>
+
+        {/* Account */}
+        <Text style={styles.sectionLabel}>ACCOUNT</Text>
+        <Card variant="default">
+          <TouchableOpacity style={styles.dangerRow} onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={20} color={Colors.text} />
+            <View style={styles.dangerTextWrap}>
+              <Text style={styles.dangerLabel}>Log out</Text>
+              <Text style={styles.dangerSub}>Sign out on this device.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.steelBlueGrey} />
+          </TouchableOpacity>
         </Card>
 
         {/* Danger Zone */}

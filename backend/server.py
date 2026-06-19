@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Literal
-from datetime import datetime
+from datetime import datetime, timedelta
 from bson import ObjectId
 import os
 import tempfile
@@ -77,6 +77,22 @@ class UserResponse(BaseModel):
     pepper_spice_level: str
     timezone: str
     created_at: datetime
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    name: str
+    nickname: Optional[str] = None
+    pepper_spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
+    timezone: str = "UTC"
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserResponse
 
 class DailyEntryCreate(BaseModel):
     date: str  # YYYY-MM-DD format
@@ -406,46 +422,111 @@ def detect_crisis(text: str) -> bool:
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in CRISIS_KEYWORDS)
 
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+import jwt as pyjwt
+from fastapi import Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET is not set. Add it to backend/.env")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_DAYS = 30
+
+bearer_scheme = HTTPBearer(auto_error=True)
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def create_access_token(user_id: str) -> str:
+    payload = {
+        "sub": user_id,
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS),
+    }
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """Resolve the authenticated user from the Bearer token. Raises 401 otherwise."""
+    try:
+        payload = pyjwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+    except pyjwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token.")
+
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=401, detail="Invalid authentication token.")
+
+    user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=401, detail="User no longer exists.")
+    user["id"] = str(user["_id"])
+    return user
+
+
 # API Endpoints
 @app.get("/")
 async def root():
     return {"message": "Salt Check API", "status": "running"}
 
-# User endpoints
-@app.post("/api/users", response_model=UserResponse)
-async def create_user(user: UserCreate):
-    user_dict = user.model_dump()
-    user_dict["created_at"] = datetime.utcnow()
-    user_dict["updated_at"] = datetime.utcnow()
-    
-    # Check if user exists
-    existing = await users_collection.find_one({"email": user.email})
+# Auth endpoints
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register(body: RegisterRequest):
+    email = body.email.lower()
+    existing = await users_collection.find_one({"email": email})
     if existing:
-        raise HTTPException(status_code=400, detail="User already exists")
-    
+        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+
+    user_dict = {
+        "email": email,
+        "name": body.name,
+        "nickname": body.nickname,
+        "pepper_spice_level": body.pepper_spice_level,
+        "timezone": body.timezone,
+        "password_hash": hash_password(body.password),
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+    }
     result = await users_collection.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
-    return UserResponse(**user_dict)
+    token = create_access_token(user_dict["id"])
+    return AuthResponse(token=token, user=UserResponse(**user_dict))
 
-@app.get("/api/users/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str):
-    user = await users_collection.find_one({"_id": ObjectId(user_id)})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(body: LoginRequest):
+    user = await users_collection.find_one({"email": body.email.lower()})
+    if not user or not verify_password(body.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Wrong email or password.")
     user["id"] = str(user["_id"])
-    return UserResponse(**user)
+    token = create_access_token(user["id"])
+    return AuthResponse(token=token, user=UserResponse(**user))
 
-@app.get("/api/users", response_model=List[UserResponse])
-async def list_users():
-    users = []
-    async for user in users_collection.find():
-        user["id"] = str(user["_id"])
-        users.append(UserResponse(**user))
-    return users
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def get_me(current: dict = Depends(get_current_user)):
+    return UserResponse(**current)
 
 # PEPPER Check-In endpoint
 @app.post("/api/pepper/checkin", response_model=AICheckInResponse)
-async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user"):
+async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     try:
         # Detect crisis
         is_crisis = detect_crisis(checkin.raw_dump)
@@ -694,7 +775,8 @@ async def pepper_checkin(checkin: AICheckInRequest, user_id: str = "default_user
         raise HTTPException(status_code=500, detail=f"PEPPER is taking a break: {str(e)}")
 
 @app.get("/api/pepper/history/{user_id}", response_model=List[AICheckInResponse])
-async def get_pepper_history(user_id: str, limit: int = 10):
+async def get_pepper_history(user_id: str, limit: int = 10, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     checkins = []
     async for checkin in ai_checkins_collection.find({"user_id": user_id}).sort("created_at", -1).limit(limit):
         checkin["id"] = str(checkin["_id"])
@@ -703,7 +785,8 @@ async def get_pepper_history(user_id: str, limit: int = 10):
 
 # Daily Entry endpoints
 @app.post("/api/daily-entries", response_model=DailyEntryResponse)
-async def create_daily_entry(entry: DailyEntryCreate, user_id: str = "default_user"):
+async def create_daily_entry(entry: DailyEntryCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     entry_dict = entry.model_dump()
     entry_dict["user_id"] = user_id
     entry_dict["created_at"] = datetime.utcnow()
@@ -714,7 +797,8 @@ async def create_daily_entry(entry: DailyEntryCreate, user_id: str = "default_us
     return DailyEntryResponse(**entry_dict)
 
 @app.get("/api/daily-entries/{user_id}", response_model=List[DailyEntryResponse])
-async def get_daily_entries(user_id: str):
+async def get_daily_entries(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     entries = []
     async for entry in daily_entries_collection.find({"user_id": user_id}).sort("date", -1):
         entry["id"] = str(entry["_id"])
@@ -722,7 +806,8 @@ async def get_daily_entries(user_id: str):
     return entries
 
 @app.get("/api/daily-entries/{user_id}/{date}", response_model=DailyEntryResponse)
-async def get_daily_entry_by_date(user_id: str, date: str):
+async def get_daily_entry_by_date(user_id: str, date: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     entry = await daily_entries_collection.find_one({"user_id": user_id, "date": date})
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
@@ -730,12 +815,12 @@ async def get_daily_entry_by_date(user_id: str, date: str):
     return DailyEntryResponse(**entry)
 
 @app.put("/api/daily-entries/{entry_id}", response_model=DailyEntryResponse)
-async def update_daily_entry(entry_id: str, entry: DailyEntryCreate):
+async def update_daily_entry(entry_id: str, entry: DailyEntryCreate, current: dict = Depends(get_current_user)):
     entry_dict = entry.model_dump()
     entry_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await daily_entries_collection.update_one(
-        {"_id": ObjectId(entry_id)},
+        {"_id": ObjectId(entry_id), "user_id": current["id"]},
         {"$set": entry_dict}
     )
     
@@ -748,7 +833,8 @@ async def update_daily_entry(entry_id: str, entry: DailyEntryCreate):
 
 # Project endpoints
 @app.post("/api/projects", response_model=ProjectResponse)
-async def create_project(project: ProjectCreate, user_id: str = "default_user"):
+async def create_project(project: ProjectCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     project_dict = project.model_dump()
     project_dict["user_id"] = user_id
     project_dict["created_at"] = datetime.utcnow()
@@ -759,7 +845,8 @@ async def create_project(project: ProjectCreate, user_id: str = "default_user"):
     return ProjectResponse(**project_dict)
 
 @app.get("/api/projects/{user_id}", response_model=List[ProjectResponse])
-async def get_projects(user_id: str):
+async def get_projects(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     projects = []
     async for project in projects_collection.find({"user_id": user_id}):
         project["id"] = str(project["_id"])
@@ -767,12 +854,12 @@ async def get_projects(user_id: str):
     return projects
 
 @app.put("/api/projects/{project_id}", response_model=ProjectResponse)
-async def update_project(project_id: str, project: ProjectCreate):
+async def update_project(project_id: str, project: ProjectCreate, current: dict = Depends(get_current_user)):
     project_dict = project.model_dump()
     project_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await projects_collection.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": ObjectId(project_id), "user_id": current["id"]},
         {"$set": project_dict}
     )
     
@@ -784,15 +871,16 @@ async def update_project(project_id: str, project: ProjectCreate):
     return ProjectResponse(**updated_project)
 
 @app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str):
-    result = await projects_collection.delete_one({"_id": ObjectId(project_id)})
+async def delete_project(project_id: str, current: dict = Depends(get_current_user)):
+    result = await projects_collection.delete_one({"_id": ObjectId(project_id), "user_id": current["id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"message": "Project deleted"}
 
 # Task endpoints
 @app.post("/api/tasks", response_model=TaskResponse)
-async def create_task(task: TaskCreate, user_id: str = "default_user"):
+async def create_task(task: TaskCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     task_dict = task.model_dump()
     task_dict["user_id"] = user_id
     task_dict["created_at"] = datetime.utcnow()
@@ -803,7 +891,8 @@ async def create_task(task: TaskCreate, user_id: str = "default_user"):
     return TaskResponse(**task_dict)
 
 @app.get("/api/tasks/{user_id}", response_model=List[TaskResponse])
-async def get_tasks(user_id: str):
+async def get_tasks(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     tasks = []
     async for task in tasks_collection.find({"user_id": user_id}):
         task["id"] = str(task["_id"])
@@ -811,12 +900,12 @@ async def get_tasks(user_id: str):
     return tasks
 
 @app.put("/api/tasks/{task_id}", response_model=TaskResponse)
-async def update_task(task_id: str, task: TaskCreate):
+async def update_task(task_id: str, task: TaskCreate, current: dict = Depends(get_current_user)):
     task_dict = task.model_dump()
     task_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await tasks_collection.update_one(
-        {"_id": ObjectId(task_id)},
+        {"_id": ObjectId(task_id), "user_id": current["id"]},
         {"$set": task_dict}
     )
     
@@ -828,15 +917,16 @@ async def update_task(task_id: str, task: TaskCreate):
     return TaskResponse(**updated_task)
 
 @app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: str):
-    result = await tasks_collection.delete_one({"_id": ObjectId(task_id)})
+async def delete_task(task_id: str, current: dict = Depends(get_current_user)):
+    result = await tasks_collection.delete_one({"_id": ObjectId(task_id), "user_id": current["id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"message": "Task deleted"}
 
 # Money Entry endpoints
 @app.post("/api/money-entries", response_model=MoneyEntryResponse)
-async def create_money_entry(entry: MoneyEntryCreate, user_id: str = "default_user"):
+async def create_money_entry(entry: MoneyEntryCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     entry_dict = entry.model_dump()
     entry_dict["user_id"] = user_id
     entry_dict["created_at"] = datetime.utcnow()
@@ -847,7 +937,8 @@ async def create_money_entry(entry: MoneyEntryCreate, user_id: str = "default_us
     return MoneyEntryResponse(**entry_dict)
 
 @app.get("/api/money-entries/{user_id}", response_model=List[MoneyEntryResponse])
-async def get_money_entries(user_id: str):
+async def get_money_entries(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     entries = []
     async for entry in money_entries_collection.find({"user_id": user_id}).sort("date", -1):
         entry["id"] = str(entry["_id"])
@@ -855,12 +946,12 @@ async def get_money_entries(user_id: str):
     return entries
 
 @app.put("/api/money-entries/{entry_id}", response_model=MoneyEntryResponse)
-async def update_money_entry(entry_id: str, entry: MoneyEntryCreate):
+async def update_money_entry(entry_id: str, entry: MoneyEntryCreate, current: dict = Depends(get_current_user)):
     entry_dict = entry.model_dump()
     entry_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await money_entries_collection.update_one(
-        {"_id": ObjectId(entry_id)},
+        {"_id": ObjectId(entry_id), "user_id": current["id"]},
         {"$set": entry_dict}
     )
     
@@ -873,7 +964,8 @@ async def update_money_entry(entry_id: str, entry: MoneyEntryCreate):
 
 # Body Log endpoints
 @app.post("/api/body-logs", response_model=BodyLogResponse)
-async def create_body_log(log: BodyLogCreate, user_id: str = "default_user"):
+async def create_body_log(log: BodyLogCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     log_dict = log.model_dump()
     log_dict["user_id"] = user_id
     log_dict["created_at"] = datetime.utcnow()
@@ -884,7 +976,8 @@ async def create_body_log(log: BodyLogCreate, user_id: str = "default_user"):
     return BodyLogResponse(**log_dict)
 
 @app.get("/api/body-logs/{user_id}", response_model=List[BodyLogResponse])
-async def get_body_logs(user_id: str):
+async def get_body_logs(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     logs = []
     async for log in body_logs_collection.find({"user_id": user_id}).sort("date", -1):
         log["id"] = str(log["_id"])
@@ -892,12 +985,12 @@ async def get_body_logs(user_id: str):
     return logs
 
 @app.put("/api/body-logs/{log_id}", response_model=BodyLogResponse)
-async def update_body_log(log_id: str, log: BodyLogCreate):
+async def update_body_log(log_id: str, log: BodyLogCreate, current: dict = Depends(get_current_user)):
     log_dict = log.model_dump()
     log_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await body_logs_collection.update_one(
-        {"_id": ObjectId(log_id)},
+        {"_id": ObjectId(log_id), "user_id": current["id"]},
         {"$set": log_dict}
     )
     
@@ -910,7 +1003,8 @@ async def update_body_log(log_id: str, log: BodyLogCreate):
 
 # Person Note endpoints
 @app.post("/api/person-notes", response_model=PersonNoteResponse)
-async def create_person_note(note: PersonNoteCreate, user_id: str = "default_user"):
+async def create_person_note(note: PersonNoteCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     note_dict = note.model_dump()
     note_dict["user_id"] = user_id
     note_dict["created_at"] = datetime.utcnow()
@@ -921,7 +1015,8 @@ async def create_person_note(note: PersonNoteCreate, user_id: str = "default_use
     return PersonNoteResponse(**note_dict)
 
 @app.get("/api/person-notes/{user_id}", response_model=List[PersonNoteResponse])
-async def get_person_notes(user_id: str):
+async def get_person_notes(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     notes = []
     async for note in person_notes_collection.find({"user_id": user_id}):
         note["id"] = str(note["_id"])
@@ -929,12 +1024,12 @@ async def get_person_notes(user_id: str):
     return notes
 
 @app.put("/api/person-notes/{note_id}", response_model=PersonNoteResponse)
-async def update_person_note(note_id: str, note: PersonNoteCreate):
+async def update_person_note(note_id: str, note: PersonNoteCreate, current: dict = Depends(get_current_user)):
     note_dict = note.model_dump()
     note_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await person_notes_collection.update_one(
-        {"_id": ObjectId(note_id)},
+        {"_id": ObjectId(note_id), "user_id": current["id"]},
         {"$set": note_dict}
     )
     
@@ -946,14 +1041,14 @@ async def update_person_note(note_id: str, note: PersonNoteCreate):
     return PersonNoteResponse(**updated_note)
 
 @app.delete("/api/person-notes/{note_id}")
-async def delete_person_note(note_id: str):
-    result = await person_notes_collection.delete_one({"_id": ObjectId(note_id)})
+async def delete_person_note(note_id: str, current: dict = Depends(get_current_user)):
+    result = await person_notes_collection.delete_one({"_id": ObjectId(note_id), "user_id": current["id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Note not found")
     return {"message": "Receipt deleted"}
 
 @app.post("/api/pepper/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+async def transcribe_audio(file: UploadFile = File(...), current: dict = Depends(get_current_user)):
     """Accept an audio file (m4a/mp3/wav/webm) and return Whisper transcription."""
     try:
         suffix = os.path.splitext(file.filename or "audio.m4a")[1] or ".m4a"
@@ -1013,8 +1108,9 @@ class RegisterPushBody(BaseModel):
 
 
 @app.post("/api/register-push", status_code=201)
-async def register_push(body: RegisterPushBody):
+async def register_push(body: RegisterPushBody, current: dict = Depends(get_current_user)):
     try:
+        body.user_id = current["id"]
         resp = await _push_client.post("/api/v1/push/users/register", json=body.model_dump())
         if resp.status_code == 401:
             # Placeholder/missing key — graceful skip so the app keeps working in preview
@@ -1052,11 +1148,11 @@ class TestPushBody(BaseModel):
 
 
 @app.post("/api/send-test-push")
-async def send_test_push(body: TestPushBody):
+async def send_test_push(body: TestPushBody, current: dict = Depends(get_current_user)):
     """Manually trigger a push to verify wiring after deployment."""
     try:
         await send_push(
-            recipients=[body.user_id],
+            recipients=[current["id"]],
             data={"title": body.title, "message": body.message},
         )
         return {"status": "sent"}
@@ -1118,8 +1214,9 @@ def _category_directive(category: Optional[str]) -> str:
 
 
 @app.post("/api/pepper/advise-person")
-async def advise_person(req: PersonAdviceRequest, user_id: str = "default_user"):
+async def advise_person(req: PersonAdviceRequest, current: dict = Depends(get_current_user)):
     """PEPPER reads the person notes and tells the user what to do."""
+    user_id = current["id"]
     try:
         spice_modifier = {
             "mild": "Tone down sass. Warm and direct.",
@@ -1234,7 +1331,8 @@ class BodyAdviceRequest(BaseModel):
 
 
 @app.post("/api/pepper/advise-body")
-async def advise_body(req: BodyAdviceRequest, user_id: str = "default_user"):
+async def advise_body(req: BodyAdviceRequest, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     """PEPPER reads body care notes and gives gentle, practical care moves."""
     try:
         spice_modifier = {
@@ -1313,12 +1411,13 @@ import base64
 @app.post("/api/pepper/analyze-receipt")
 async def analyze_receipt(
     file: UploadFile = File(...),
-    user_id: str = Form("default_user"),
     person_name: str = Form(""),
     relationship_category: str = Form(""),
     spice_level: str = Form("medium"),
+    current: dict = Depends(get_current_user),
 ):
     """PEPPER reads a screenshot of a conversation and gives a vibe read."""
+    user_id = current["id"]
     try:
         content = await file.read()
         if len(content) > 8 * 1024 * 1024:
@@ -1420,7 +1519,8 @@ class MedicationResponse(BaseModel):
 
 
 @app.post("/api/medications", response_model=MedicationResponse)
-async def create_medication(med: MedicationCreate, user_id: str = "default_user"):
+async def create_medication(med: MedicationCreate, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     doc = med.dict()
     doc["user_id"] = user_id
     doc["intake_history"] = []
@@ -1433,7 +1533,8 @@ async def create_medication(med: MedicationCreate, user_id: str = "default_user"
 
 
 @app.get("/api/medications/{user_id}", response_model=List[MedicationResponse])
-async def get_medications(user_id: str):
+async def get_medications(user_id: str, current: dict = Depends(get_current_user)):
+    user_id = current["id"]
     cursor = medications_collection.find({"user_id": user_id}).sort("created_at", -1)
     out = []
     async for d in cursor:
@@ -1443,14 +1544,14 @@ async def get_medications(user_id: str):
 
 
 @app.put("/api/medications/{med_id}", response_model=MedicationResponse)
-async def update_medication(med_id: str, med: MedicationCreate):
+async def update_medication(med_id: str, med: MedicationCreate, current: dict = Depends(get_current_user)):
     try:
         oid = ObjectId(med_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Med not found")
     doc = med.dict()
     doc["updated_at"] = datetime.utcnow()
-    r = await medications_collection.update_one({"_id": oid}, {"$set": doc})
+    r = await medications_collection.update_one({"_id": oid, "user_id": current["id"]}, {"$set": doc})
     if r.matched_count == 0:
         raise HTTPException(status_code=404, detail="Med not found")
     updated = await medications_collection.find_one({"_id": oid})
@@ -1459,12 +1560,12 @@ async def update_medication(med_id: str, med: MedicationCreate):
 
 
 @app.delete("/api/medications/{med_id}")
-async def delete_medication(med_id: str):
+async def delete_medication(med_id: str, current: dict = Depends(get_current_user)):
     try:
         oid = ObjectId(med_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Med not found")
-    r = await medications_collection.delete_one({"_id": oid})
+    r = await medications_collection.delete_one({"_id": oid, "user_id": current["id"]})
     if r.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Med not found")
     return {"deleted": True}
@@ -1475,14 +1576,14 @@ class MedTakePayload(BaseModel):
 
 
 @app.post("/api/medications/{med_id}/take", response_model=MedicationResponse)
-async def mark_med_taken(med_id: str, payload: MedTakePayload):
+async def mark_med_taken(med_id: str, payload: MedTakePayload, current: dict = Depends(get_current_user)):
     """Record that the user took this med on the given date."""
     try:
         oid = ObjectId(med_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Med not found")
     target_date = payload.date or datetime.utcnow().strftime("%Y-%m-%d")
-    med = await medications_collection.find_one({"_id": oid})
+    med = await medications_collection.find_one({"_id": oid, "user_id": current["id"]})
     if not med:
         raise HTTPException(status_code=404, detail="Med not found")
     history = med.get("intake_history") or []
@@ -1501,14 +1602,14 @@ async def mark_med_taken(med_id: str, payload: MedTakePayload):
 
 
 @app.delete("/api/medications/{med_id}/take", response_model=MedicationResponse)
-async def undo_med_taken(med_id: str, date: Optional[str] = None):
+async def undo_med_taken(med_id: str, date: Optional[str] = None, current: dict = Depends(get_current_user)):
     """Remove the intake record for the given date (undo)."""
     try:
         oid = ObjectId(med_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Med not found")
     target_date = date or datetime.utcnow().strftime("%Y-%m-%d")
-    med = await medications_collection.find_one({"_id": oid})
+    med = await medications_collection.find_one({"_id": oid, "user_id": current["id"]})
     if not med:
         raise HTTPException(status_code=404, detail="Med not found")
     history = med.get("intake_history") or []
