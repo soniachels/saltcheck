@@ -15,6 +15,7 @@ import { DatePicker } from '../../src/components/DatePicker';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { detectCurrency, formatMoney } from '../../src/utils/locale';
+import { generateCashflowPdf } from '../../src/utils/cashflowReport';
 
 const REGRET_LABELS = ['none', 'a lil', 'medium', 'big', 'huge'];
 
@@ -26,6 +27,31 @@ function isoWeekKey(d: Date) {
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
   const weekNum = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   return `${date.getUTCFullYear()}-W${String(weekNum).padStart(2, '0')}`;
+}
+
+// Advance a date string by one recurrence period (for recurring income/bills).
+function advanceDate(iso: string | undefined, period: string): string {
+  const base = iso ? new Date(iso) : new Date();
+  if (period === 'weekly') base.setDate(base.getDate() + 7);
+  else if (period === 'biweekly') base.setDate(base.getDate() + 14);
+  else base.setMonth(base.getMonth() + 1); // monthly default
+  return base.toISOString().slice(0, 10);
+}
+
+// Group dated items into ISO weeks, newest week first, with per-week totals.
+function groupByWeek(items: any[]): { week: string; total: number; items: any[] }[] {
+  const buckets: Record<string, any[]> = {};
+  for (const it of items) {
+    const key = it.date ? isoWeekKey(new Date(it.date)) : 'undated';
+    (buckets[key] = buckets[key] || []).push(it);
+  }
+  return Object.keys(buckets)
+    .sort((a, b) => (a < b ? 1 : -1)) // newest week first; "undated" sorts last
+    .map((week) => ({
+      week,
+      total: buckets[week].reduce((s, x) => s + (x.amount || 0), 0),
+      items: buckets[week],
+    }));
 }
 
 function daysFromToday(iso: string): number | null {
@@ -40,7 +66,7 @@ function daysFromToday(iso: string): number | null {
 }
 
 export default function GirlMathScreen() {
-  const { currentUserId } = useAppStore();
+  const { currentUserId, nickname } = useAppStore();
   const [entry, setEntry] = useState<any>(null);
   const [currency, setCurrency] = useState(detectCurrency());
 
@@ -138,6 +164,38 @@ export default function GirlMathScreen() {
   const [showAllDoom, setShowAllDoom] = useState(false);
   const [showAllSoft, setShowAllSoft] = useState(false);
   const [showReceivedIncome, setShowReceivedIncome] = useState(false);
+  // Which category's detail is expanded below the horizontal card carousel.
+  const [activeCard, setActiveCard] = useState<'bills' | 'income' | 'doom' | 'soft'>('bills');
+  // Doom/Soft history (all past weeks — main view only shows the current week).
+  const [historyModal, setHistoryModal] = useState<{ open: boolean; kind: 'doom' | 'soft' }>({ open: false, kind: 'doom' });
+  // Cash-flow PDF report
+  const monthStart = `${today.slice(0, 8)}01`;
+  const [reportModal, setReportModal] = useState(false);
+  const [reportStart, setReportStart] = useState(monthStart);
+  const [reportEnd, setReportEnd] = useState(today);
+  const [reportBusy, setReportBusy] = useState(false);
+
+  const handleGenerateReport = async () => {
+    if (reportStart > reportEnd) {
+      Alert.alert('Hold up', 'Start date is after the end date.');
+      return;
+    }
+    setReportBusy(true);
+    try {
+      await generateCashflowPdf({
+        entry,
+        startDate: reportStart,
+        endDate: reportEnd,
+        fmt: (n: number) => formatMoney(n, currency),
+        userName: nickname || undefined,
+      });
+      setReportModal(false);
+    } catch (e: any) {
+      Alert.alert('Report failed', e?.message || 'Could not build the PDF.');
+    } finally {
+      setReportBusy(false);
+    }
+  };
 
   const DEFAULT_VISIBLE = 5;
   const visibleBills = showAllBills ? sortedUnpaidBills : sortedUnpaidBills.slice(0, DEFAULT_VISIBLE);
@@ -145,14 +203,17 @@ export default function GirlMathScreen() {
   const visibleDoom = showAllDoom ? sortedDoom : sortedDoom.slice(0, DEFAULT_VISIBLE);
   const visibleSoft = showAllSoft ? weeklySoft : weeklySoft.slice(0, DEFAULT_VISIBLE);
 
-  // Floor = cash on hand − unpaid bills − this-week doom
-  const cash = entry?.cash_available || 0;
-  const lumpBills = entry?.upcoming_bills || 0; // fallback if no itemized
-  const effectiveBills = unpaidBills.length > 0 ? billsTotal : lumpBills;
-  const lumpIncome = entry?.expected_income || 0;
-  const effectiveIncome = allIncome.length > 0 ? incomeTotal : lumpIncome;
-  const floor = cash - effectiveBills;
-  const floorAfterDoom = floor - totalDoom;
+  // ---- Active running balance ----
+  // Starts at the user's keyed-in starting balance; marking a bill PAID deducts
+  // it, marking income RECEIVED tops it up. Derived (not a mutated number) so
+  // toggling paid/received on and off always stays correct.
+  const startingBalance = entry?.cash_available || 0;
+  const paidBillsTotal = paidBills.reduce((s, b) => s + (b.amount || 0), 0);
+  const receivedIncomeTotal = receivedIncome.reduce((s, i) => s + (i.amount || 0), 0);
+  const activeBalance = startingBalance - paidBillsTotal + receivedIncomeTotal;
+
+  // Projected balance once everything still-outstanding settles.
+  const projectedBalance = activeBalance - billsTotal + incomeTotal;
 
   // Show conversational intake if no entry yet
   const showIntake = !entry || (
@@ -260,7 +321,21 @@ export default function GirlMathScreen() {
 
   const toggleIncomeReceived = async (idx: number) => {
     const income = [...allIncome];
-    income[idx] = { ...income[idx], received: !income[idx].received };
+    const item = income[idx];
+    const nowReceived = !item.received;
+    income[idx] = { ...item, received: nowReceived };
+    // Recurring income: when first marked received, spin up the next occurrence
+    // (unreceived, dated one period later). _spawned guards against duplicates.
+    if (nowReceived && item.recurring && !item._spawned) {
+      income[idx]._spawned = true;
+      income.push({
+        label: item.label,
+        amount: item.amount,
+        recurring: item.recurring,
+        expected_date: advanceDate(item.expected_date, item.recurring),
+        received: false,
+      });
+    }
     await upsertField({ income });
   };
 
@@ -313,7 +388,7 @@ export default function GirlMathScreen() {
         <View style={styles.hero}>
           <Text style={styles.heroLabel}>* GIRL MATH</Text>
           <Text style={styles.heroTitle}>the floor is the floor.</Text>
-          <Text style={styles.heroSub}>cash − bills − doom. that's it.</Text>
+          <Text style={styles.heroSub}>pay a bill, it drops. money in, it climbs.</Text>
         </View>
 
         {showIntake ? (
@@ -349,40 +424,81 @@ export default function GirlMathScreen() {
           </>
         ) : (
           <>
-            {/* THE FLOOR — hero number */}
+            {/* ACTIVE BALANCE — hero number */}
             <View style={styles.floorCard}>
-              <Text style={styles.floorLabel}>THE FLOOR</Text>
-              <Text style={[styles.floorAmount, floorAfterDoom < 0 && styles.floorAmountNegative]}>
-                {formatMoney(floorAfterDoom, currency)}
+              <Text style={styles.floorLabel}>ACTIVE BALANCE</Text>
+              <Text style={[styles.floorAmount, activeBalance < 0 && styles.floorAmountNegative]}>
+                {formatMoney(activeBalance, currency)}
               </Text>
               <Text style={styles.floorSub}>
-                {formatMoney(entry?.cash_available || 0, currency)} cash − {formatMoney(entry?.upcoming_bills || 0, currency)} bills{totalDoom > 0 ? ` − ${formatMoney(totalDoom, currency)} doom` : ''}
+                {formatMoney(startingBalance, currency)} start
+                {paidBillsTotal > 0 ? ` − ${formatMoney(paidBillsTotal, currency)} paid` : ''}
+                {receivedIncomeTotal > 0 ? ` + ${formatMoney(receivedIncomeTotal, currency)} in` : ''}
               </Text>
-              {entry?.expected_income > 0 && (
+              {(billsTotal > 0 || incomeTotal > 0) && (
                 <View style={styles.incomeBadge}>
-                  <Ionicons name="trending-up" size={14} color={Colors.pickleLime} />
-                  <Text style={styles.incomeText}>+{formatMoney(entry.expected_income, currency)} incoming</Text>
+                  <Ionicons name="git-compare" size={14} color={Colors.pickleLime} />
+                  <Text style={styles.incomeText}>
+                    projected {formatMoney(projectedBalance, currency)} after {formatMoney(billsTotal, currency)} bills{incomeTotal > 0 ? ` / +${formatMoney(incomeTotal, currency)} due` : ''}
+                  </Text>
                 </View>
               )}
             </View>
 
-            {/* Quick edits */}
+            {/* Quick stats — starting balance editable; bills/income left are derived */}
             <View style={styles.quickRow}>
               <TouchableOpacity style={styles.quickTile} onPress={() => { setEditField('cash_available'); setEditValue(entry?.cash_available?.toString() || ''); }}>
-                <Text style={styles.quickLabel}>CASH</Text>
-                <Text style={styles.quickValue}>{formatMoney(entry?.cash_available || 0, currency)}</Text>
+                <Text style={styles.quickLabel}>STARTING</Text>
+                <Text style={styles.quickValue}>{formatMoney(startingBalance, currency)}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.quickTile} onPress={() => { setEditField('upcoming_bills'); setEditValue(entry?.upcoming_bills?.toString() || ''); }}>
-                <Text style={styles.quickLabel}>BILLS</Text>
-                <Text style={[styles.quickValue, { color: Colors.brightRed }]}>{formatMoney(entry?.upcoming_bills || 0, currency)}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.quickTile} onPress={() => { setEditField('expected_income'); setEditValue(entry?.expected_income?.toString() || ''); }}>
+              <View style={styles.quickTile}>
+                <Text style={styles.quickLabel}>BILLS LEFT</Text>
+                <Text style={[styles.quickValue, { color: Colors.brightRed }]}>{formatMoney(billsTotal, currency)}</Text>
+              </View>
+              <View style={styles.quickTile}>
                 <Text style={styles.quickLabel}>INCOMING</Text>
-                <Text style={[styles.quickValue, { color: Colors.pickleLime }]}>{formatMoney(effectiveIncome, currency)}</Text>
-              </TouchableOpacity>
+                <Text style={[styles.quickValue, { color: Colors.pickleLime }]}>{formatMoney(incomeTotal, currency)}</Text>
+              </View>
             </View>
 
+            {/* Cash-flow PDF report */}
+            <TouchableOpacity style={styles.reportBtn} onPress={() => setReportModal(true)}>
+              <Ionicons name="document-text-outline" size={16} color={Colors.text} />
+              <Text style={styles.reportBtnText}>CASH FLOW REPORT (PDF)</Text>
+            </TouchableOpacity>
+
+            {/* Category carousel — square cards, horizontal scroll */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.cardScroll}
+              style={{ marginBottom: Spacing.md }}
+            >
+              {([
+                { key: 'bills', label: 'BILLS', value: billsTotal, count: unpaidBills.length, color: Colors.brightRed, sub: `${unpaidBills.length} unpaid` },
+                { key: 'income', label: 'INCOMING', value: incomeTotal, count: pendingIncome.length, color: Colors.pickleLime, sub: `${pendingIncome.length} pending` },
+                { key: 'doom', label: 'DOOM', value: totalDoom, count: weeklyDoom.length, color: Colors.brightRed, sub: 'this week' },
+                { key: 'soft', label: 'SOFT SAVING', value: totalSoft, count: weeklySoft.length, color: Colors.pickleLime, sub: 'this week' },
+              ] as const).map((c) => {
+                const active = activeCard === c.key;
+                return (
+                  <TouchableOpacity
+                    key={c.key}
+                    style={[styles.squareCard, active && styles.squareCardActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setActiveCard(c.key)}
+                  >
+                    <Text style={[styles.squareCardLabel, active && { color: c.color }]}>{c.label}</Text>
+                    <Text style={styles.squareCardValue}>{formatMoney(c.value, currency)}</Text>
+                    <Text style={styles.squareCardSub}>{c.sub}</Text>
+                    {active && <View style={[styles.squareCardBar, { backgroundColor: c.color }]} />}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
             {/* Itemized Bills */}
+            {activeCard === 'bills' && (<>
             <Text style={styles.sectionLabel}>BILLS.</Text>
             <Text style={styles.sectionHint}>sorted by due date. overdue at the top.</Text>
             {visibleBills.map((b: any) => {
@@ -448,7 +564,10 @@ export default function GirlMathScreen() {
               );
             })}
 
+            </>)}
+
             {/* Itemized Income */}
+            {activeCard === 'income' && (<>
             <Text style={styles.sectionLabel}>INCOMING.</Text>
             <Text style={styles.sectionHint}>sorted by arrival date. mark received when it lands.</Text>
             {visibleIncome.map((it: any) => {
@@ -514,7 +633,10 @@ export default function GirlMathScreen() {
               );
             })}
 
+            </>)}
+
             {/* Doom Spending */}
+            {activeCard === 'doom' && (<>
             <Text style={styles.sectionLabel}>DOOM SPENDING.</Text>
             <Text style={styles.sectionHint}>sorted by regret. this week only — auto-resets monday.</Text>
             {visibleDoom.map((d: any, i: number) => (
@@ -540,8 +662,17 @@ export default function GirlMathScreen() {
               </TouchableOpacity>
             )}
             <CategoryCard title="+ LOG A DOOM SPEND" subtitle={totalDoom > 0 ? `${formatMoney(totalDoom, currency)} this week` : 'no shame. just data.'} icon="add-circle" variant="red" onPress={() => setDoomModal(true)} />
+            {allDoom.length > weeklyDoom.length && (
+              <TouchableOpacity style={styles.historyLink} onPress={() => setHistoryModal({ open: true, kind: 'doom' })}>
+                <Ionicons name="time-outline" size={14} color={Colors.textSubtle} />
+                <Text style={styles.historyLinkText}>VIEW HISTORY · {allDoom.length} total</Text>
+              </TouchableOpacity>
+            )}
+
+            </>)}
 
             {/* Soft Saving */}
+            {activeCard === 'soft' && (<>
             <Text style={styles.sectionLabel}>SOFT SAVING.</Text>
             <Text style={styles.sectionHint}>small wins. spare change. this week only.</Text>
             {visibleSoft.map((s: any, i: number) => (
@@ -567,12 +698,21 @@ export default function GirlMathScreen() {
               </TouchableOpacity>
             )}
             <CategoryCard title="+ STASH A SMALL WIN" subtitle={totalSoft > 0 ? `${formatMoney(totalSoft, currency)} stashed this week` : 'every bit counts.'} icon="add-circle" variant="lime" onPress={() => setSoftModal(true)} />
+            {allSoft.length > weeklySoft.length && (
+              <TouchableOpacity style={styles.historyLink} onPress={() => setHistoryModal({ open: true, kind: 'soft' })}>
+                <Ionicons name="time-outline" size={14} color={Colors.textSubtle} />
+                <Text style={styles.historyLinkText}>VIEW HISTORY · {allSoft.length} total</Text>
+              </TouchableOpacity>
+            )}
+            </>)}
 
             {/* PEPPER analysis */}
-            <PepperBubble label="* PEPPER" variant={floorAfterDoom < 0 ? 'red' : 'lime'} style={{ marginTop: Spacing.lg }}>
-              {floorAfterDoom < 0
-                ? `Floor's negative by ${formatMoney(Math.abs(floorAfterDoom), currency)}. Pause spending. Move one bill.`
-                : floorAfterDoom < 100
+            <PepperBubble label="* PEPPER" variant={activeBalance < 0 ? 'red' : 'lime'} style={{ marginTop: Spacing.lg }}>
+              {activeBalance < 0
+                ? `Balance is under by ${formatMoney(Math.abs(activeBalance), currency)}. Pause spending. Chase one income.`
+                : projectedBalance < 0
+                ? `You're fine now, but after the unpaid bills you land at ${formatMoney(projectedBalance, currency)}. Don't get comfy.`
+                : activeBalance < 100
                 ? "Tight. Don't be cute with online shopping this week."
                 : totalDoom > totalSoft * 2 && totalDoom > 0
                 ? `Doom is ${formatMoney(totalDoom, currency)}, saving is ${formatMoney(totalSoft, currency)}. The math is mathing in the wrong direction.`
@@ -720,6 +860,59 @@ export default function GirlMathScreen() {
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Doom/Soft history — past weeks */}
+      <Modal visible={historyModal.open} animationType="slide" transparent onRequestClose={() => setHistoryModal({ ...historyModal, open: false })}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.historyCard}>
+            <View style={styles.historyHeader}>
+              <Text style={styles.editorTitle}>{historyModal.kind === 'doom' ? 'DOOM HISTORY' : 'SOFT SAVING HISTORY'}</Text>
+              <TouchableOpacity onPress={() => setHistoryModal({ ...historyModal, open: false })}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.sectionHint}>resets every monday — but the receipts stay here.</Text>
+            <ScrollView style={{ maxHeight: 420 }}>
+              {groupByWeek(historyModal.kind === 'doom' ? allDoom : allSoft).map((g) => (
+                <View key={g.week} style={styles.weekGroup}>
+                  <View style={styles.weekHeader}>
+                    <Text style={styles.weekLabel}>{g.week === thisWeek ? 'THIS WEEK' : g.week === 'undated' ? 'UNDATED' : g.week}</Text>
+                    <Text style={[styles.weekTotal, { color: historyModal.kind === 'doom' ? Colors.brightRed : Colors.pickleLime }]}>{formatMoney(g.total, currency)}</Text>
+                  </View>
+                  {g.items.map((it: any, i: number) => (
+                    <View key={i} style={styles.weekItem}>
+                      <Text style={styles.weekItemLabel}>{it.label}</Text>
+                      <Text style={styles.weekItemAmt}>
+                        {formatMoney(it.amount, currency)}
+                        {historyModal.kind === 'doom' && it.regret != null ? ` · ${REGRET_LABELS[it.regret] || ''}` : ''}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ))}
+            </ScrollView>
+            <Button title="DONE" onPress={() => setHistoryModal({ ...historyModal, open: false })} variant="primary" style={{ marginTop: Spacing.md }} />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Cash-flow report — pick a date range, export PDF */}
+      <Modal visible={reportModal} animationType="slide" transparent onRequestClose={() => setReportModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.editorScroll}>
+            <View style={styles.editorCard}>
+              <Text style={styles.editorTitle}>CASH FLOW REPORT</Text>
+              <Text style={styles.sectionHint}>pick a range. we'll build a PDF you can save or share.</Text>
+              <DatePicker label="FROM" value={reportStart} onChange={setReportStart} variant="lilac" />
+              <DatePicker label="TO" value={reportEnd} onChange={setReportEnd} variant="lilac" />
+              <View style={styles.editorActions}>
+                <Button title="CANCEL" onPress={() => setReportModal(false)} variant="ghost" />
+                <Button title={reportBusy ? 'BUILDING…' : 'EXPORT PDF'} onPress={handleGenerateReport} variant="primary" loading={reportBusy} />
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -760,6 +953,35 @@ const styles = StyleSheet.create({
   },
   quickLabel: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '700', letterSpacing: 1, marginBottom: 4 },
   quickValue: { fontSize: Typography.fontSize.lg, color: Colors.text, fontWeight: '800' },
+  // Horizontal category carousel
+  cardScroll: { gap: Spacing.sm, paddingVertical: Spacing.xs, paddingRight: Spacing.md },
+  squareCard: {
+    width: 130, height: 130,
+    backgroundColor: Colors.charcoalRaised,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.md,
+    justifyContent: 'space-between',
+  },
+  squareCardActive: { borderColor: Colors.text, backgroundColor: Colors.charcoalRaised, transform: [{ scale: 1.02 }] },
+  squareCardLabel: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '800', letterSpacing: 1 },
+  squareCardValue: { fontSize: Typography.fontSize.xl, color: Colors.text, fontWeight: '900' },
+  squareCardSub: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle },
+  squareCardBar: { height: 3, borderRadius: 2, marginTop: 2 },
+  // History
+  reportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: Spacing.sm, marginBottom: Spacing.sm, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.charcoalRaised },
+  reportBtnText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '800', letterSpacing: 1 },
+  historyLink: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, justifyContent: 'center' },
+  historyLinkText: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '700', letterSpacing: 1 },
+  historyCard: { marginTop: 'auto', backgroundColor: Colors.charcoalRaised, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border },
+  historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  weekGroup: { marginTop: Spacing.md },
+  weekHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: Colors.border, paddingBottom: 4, marginBottom: 6 },
+  weekLabel: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '800', letterSpacing: 1 },
+  weekTotal: { fontSize: Typography.fontSize.sm, fontWeight: '800' },
+  weekItem: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
+  weekItemLabel: { fontSize: Typography.fontSize.sm, color: Colors.textSubtle },
+  weekItemAmt: { fontSize: Typography.fontSize.sm, color: Colors.text, fontWeight: '600' },
   sectionLabel: { fontSize: Typography.fontSize.xs, color: Colors.pickleLime, fontWeight: '800', letterSpacing: 2, marginTop: Spacing.lg },
   sectionHint: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, marginBottom: Spacing.md, fontStyle: 'italic' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },

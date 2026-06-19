@@ -45,6 +45,16 @@ medications_collection = db["medications"]
 person_notes_collection = db["person_notes"]
 ai_checkins_collection = db["ai_checkins"]
 
+
+@app.on_event("startup")
+async def _ensure_indexes():
+    # One money ledger per user — enforce the singleton at the DB level so a
+    # fresh deploy gets the same guarantee as local dev.
+    try:
+        await money_entries_collection.create_index("user_id", unique=True)
+    except Exception:
+        pass
+
 # Helper for ObjectId
 class PyObjectId(ObjectId):
     @classmethod
@@ -346,9 +356,15 @@ STRICT RULES FOR CLASSIFICATION (read carefully):
    - "deadline" is YYYY-MM-DD if user gave/implied a date.
    - Do NOT include money items or body items here.
 
-3. **bills** — Anything the user owes / has to pay (rent, credit card, utilities, subscriptions, fines, etc).
-   - These do NOT belong in salt_check, loops_to_create, or parked.
-   - If user dumps "I have to pay my credit card bill of $250 by Friday" — that's a BILL, not a task.
+3. **bills** — Anything the user owes / has to pay (rent, credit card, utilities, phone, subscriptions, loans, fines, insurance, tuition, etc).
+   - SCAN EVERY DUMP FOR MONEY OWED FIRST, before sorting tasks. If a line mentions an amount the user has to pay, or owing/due/paying anything, it is a BILL — full stop.
+   - Trigger words: "pay", "owe", "due", "bill", "rent", "subscription", "$" with an obligation, "installment", "repay", "invoice I owe".
+   - These do NOT belong in salt_check, loops_to_create, or parked. Never turn a payment into a to-do task.
+   - Always extract amount (number) and label. Include due_date (YYYY-MM-DD) and recurring ("monthly"/"weekly") when implied.
+   - Examples that are BILLS, not tasks:
+     • "I have to pay my credit card bill of $250 by Friday" → bills: [{label:"credit card", amount:250, due_date:"<fri>"}]
+     • "rent is 1200 on the 1st" → bills: [{label:"rent", amount:1200, recurring:"monthly"}]
+     • "netflix and spotify are killing me" → bills: [{label:"Netflix"...},{label:"Spotify"...}] (amount null is OK if unknown)
 
 4. **income** — Anything the user expects to receive (paychecks, invoices, refunds).
    - Same rule: NOT in salt_check or loops.
@@ -759,15 +775,25 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     }}
                 )
             else:
-                await money_entries_collection.insert_one({
-                    "user_id": user_id,
-                    "date": today_str,
-                    "currency": "USD",
-                    "bills": new_bills,
-                    "income": new_income,
-                    "created_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow(),
-                })
+                # Upsert keyed by user_id so a race with the Girl Math screen
+                # can't create a second ledger document.
+                await money_entries_collection.update_one(
+                    {"user_id": user_id},
+                    {
+                        "$set": {
+                            "bills": new_bills,
+                            "income": new_income,
+                            "updated_at": datetime.utcnow(),
+                        },
+                        "$setOnInsert": {
+                            "user_id": user_id,
+                            "date": today_str,
+                            "currency": "USD",
+                            "created_at": datetime.utcnow(),
+                        },
+                    },
+                    upsert=True,
+                )
         
         return AICheckInResponse(**checkin_doc)
         
@@ -927,11 +953,23 @@ async def delete_task(task_id: str, current: dict = Depends(get_current_user)):
 @app.post("/api/money-entries", response_model=MoneyEntryResponse)
 async def create_money_entry(entry: MoneyEntryCreate, current: dict = Depends(get_current_user)):
     user_id = current["id"]
+    # Singleton ledger: one money entry per user. If one already exists, merge
+    # into it (only overwriting fields the client actually sent) rather than
+    # creating a duplicate — this is what kept bills and cash in separate docs.
+    existing = await money_entries_collection.find_one({"user_id": user_id})
+    if existing:
+        patch = {k: v for k, v in entry.model_dump().items() if v is not None}
+        patch["updated_at"] = datetime.utcnow()
+        await money_entries_collection.update_one({"_id": existing["_id"]}, {"$set": patch})
+        entry_dict = await money_entries_collection.find_one({"_id": existing["_id"]})
+        entry_dict["id"] = str(entry_dict["_id"])
+        return MoneyEntryResponse(**entry_dict)
+
     entry_dict = entry.model_dump()
     entry_dict["user_id"] = user_id
     entry_dict["created_at"] = datetime.utcnow()
     entry_dict["updated_at"] = datetime.utcnow()
-    
+
     result = await money_entries_collection.insert_one(entry_dict)
     entry_dict["id"] = str(result.inserted_id)
     return MoneyEntryResponse(**entry_dict)
@@ -940,7 +978,10 @@ async def create_money_entry(entry: MoneyEntryCreate, current: dict = Depends(ge
 async def get_money_entries(user_id: str, current: dict = Depends(get_current_user)):
     user_id = current["id"]
     entries = []
-    async for entry in money_entries_collection.find({"user_id": user_id}).sort("date", -1):
+    # Sort by created_at desc so the client's res.data[0] is the SAME canonical
+    # entry that PEPPER's check-in merges bills/income into (it also targets the
+    # latest-by-created_at entry). Sorting by "date" could pick a different doc.
+    async for entry in money_entries_collection.find({"user_id": user_id}).sort("created_at", -1):
         entry["id"] = str(entry["_id"])
         entries.append(MoneyEntryResponse(**entry))
     return entries
