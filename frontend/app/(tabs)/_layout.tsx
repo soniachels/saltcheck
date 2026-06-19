@@ -4,7 +4,7 @@ import { View } from 'react-native';
 import { Colors, Typography } from '../../src/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { PepperFab } from '../../src/components/PepperFab';
-import { SideMenu } from '../../src/components/SideMenu';
+import { FloatingNav } from '../../src/components/FloatingNav';
 
 export default function TabLayout() {
   return (
@@ -77,7 +77,7 @@ export default function TabLayout() {
           options={{ href: null, headerShown: false }}
         />
       </Tabs>
-      <SideMenu />
+      <FloatingNav />
       <PepperFab />
     </View>
   );
