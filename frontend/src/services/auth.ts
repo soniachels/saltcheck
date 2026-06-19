@@ -7,6 +7,22 @@ export interface AuthUser {
   nickname?: string;
   pepper_spice_level: 'mild' | 'medium' | 'extra_spicy';
   timezone: string;
+  height_cm?: number | null;
+  unit_system?: 'metric' | 'imperial' | null;
+}
+
+export interface ProfileFields {
+  nickname?: string;
+  pepper_spice_level?: 'mild' | 'medium' | 'extra_spicy';
+  timezone?: string;
+  height_cm?: number;
+  unit_system?: 'metric' | 'imperial';
+}
+
+/** Update profile fields and return the refreshed user. */
+export async function updateProfile(fields: ProfileFields): Promise<AuthUser> {
+  const { data } = await apiClient.put('/auth/me', fields);
+  return data;
 }
 
 export interface RegisterPayload {

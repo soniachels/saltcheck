@@ -9,6 +9,8 @@ interface User {
   nickname?: string;
   pepper_spice_level: 'mild' | 'medium' | 'extra_spicy';
   timezone: string;
+  height_cm?: number | null;
+  unit_system?: 'metric' | 'imperial' | null;
 }
 
 interface NotificationSettings {

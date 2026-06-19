@@ -21,6 +21,7 @@ import { Input } from '../src/components/Input';
 import { DatePicker } from '../src/components/DatePicker';
 import apiClient from '../src/services/api';
 import { useAppStore } from '../src/store/appStore';
+import { updateProfile } from '../src/services/auth';
 
 interface BodyAdvice {
   vibe_read: string;
@@ -38,7 +39,8 @@ function daysBetween(a: Date, b: Date) {
 }
 
 export default function BodyScreen() {
-  const { currentUserId, pepperSpiceLevel } = useAppStore();
+  const { currentUserId, pepperSpiceLevel, user, setAuthUser } = useAppStore();
+  const [statsEditor, setStatsEditor] = useState<{ kind: 'height' | 'weight'; value: string } | null>(null);
   const [bodyLogs, setBodyLogs] = useState<any[]>([]);
   const [advice, setAdvice] = useState<BodyAdvice | null>(null);
   const [adviceLoading, setAdviceLoading] = useState(false);
@@ -101,6 +103,54 @@ export default function BodyScreen() {
     if (base) await apiClient.put(`/body-logs/${base.id}`, payload);
     else await apiClient.post(`/body-logs?user_id=${currentUserId}`, payload);
     loadLogs();
+  };
+
+  // ---- Body stats: height (profile, cm) + weight (daily log, kg) + BMI ----
+  const unit: 'metric' | 'imperial' = user?.unit_system === 'imperial' ? 'imperial' : 'metric';
+  const heightCm = user?.height_cm || null;
+  const weightKg = latest && typeof latest.weight_optional === 'number' ? latest.weight_optional : null;
+  const bmi = heightCm && weightKg ? weightKg / Math.pow(heightCm / 100, 2) : null;
+  const bmiCategory = bmi == null ? '' : bmi < 18.5 ? 'under' : bmi < 25 ? 'in range' : bmi < 30 ? 'over' : 'high';
+  const bmiColor = bmi == null ? Colors.text : bmi >= 18.5 && bmi < 25 ? Colors.pickleLime : bmi >= 30 ? Colors.brightRed : Colors.softSpiceLilac;
+
+  const fmtHeight = () => {
+    if (!heightCm) return 'set height';
+    if (unit === 'imperial') {
+      const totalIn = heightCm / 2.54;
+      return `${Math.floor(totalIn / 12)}'${Math.round(totalIn % 12)}"`;
+    }
+    return `${Math.round(heightCm)} cm`;
+  };
+  const fmtWeight = () => {
+    if (weightKg == null) return 'log weight';
+    return unit === 'imperial' ? `${Math.round(weightKg * 2.2046)} lb` : `${Math.round(weightKg * 10) / 10} kg`;
+  };
+
+  const toggleUnit = async () => {
+    const next = unit === 'imperial' ? 'metric' : 'imperial';
+    try { const u = await updateProfile({ unit_system: next }); setAuthUser(u as any); } catch {}
+  };
+
+  const openStat = (kind: 'height' | 'weight') => {
+    if (kind === 'height') {
+      setStatsEditor({ kind, value: heightCm ? String(unit === 'imperial' ? Math.round(heightCm / 2.54) : Math.round(heightCm)) : '' });
+    } else {
+      setStatsEditor({ kind, value: weightKg != null ? String(unit === 'imperial' ? Math.round(weightKg * 2.2046) : Math.round(weightKg * 10) / 10) : '' });
+    }
+  };
+
+  const saveStat = async () => {
+    if (!statsEditor) return;
+    const num = parseFloat(statsEditor.value);
+    if (isNaN(num) || num <= 0) { setStatsEditor(null); return; }
+    if (statsEditor.kind === 'height') {
+      const cm = unit === 'imperial' ? num * 2.54 : num;
+      try { const u = await updateProfile({ height_cm: Math.round(cm * 10) / 10 }); setAuthUser(u as any); } catch {}
+    } else {
+      const kg = unit === 'imperial' ? num / 2.2046 : num;
+      await upsertField('weight_optional', Math.round(kg * 10) / 10);
+    }
+    setStatsEditor(null);
   };
 
   const askPepper = async () => {
@@ -270,6 +320,33 @@ export default function BodyScreen() {
           <Text style={styles.heroTitle}>how's the body?</Text>
           <Text style={styles.heroSub}>your body is not a side quest.</Text>
         </View>
+
+        {/* Body stats: height / weight / BMI */}
+        <View style={styles.statsHeaderRow}>
+          <Text style={styles.sectionLabel}>BODY STATS.</Text>
+          <TouchableOpacity onPress={toggleUnit} style={styles.unitToggle}>
+            <Ionicons name="swap-horizontal" size={12} color={Colors.text} />
+            <Text style={styles.unitToggleText}>{unit === 'imperial' ? 'lb / ft·in' : 'kg / cm'}</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.statsRow}>
+          <TouchableOpacity style={styles.statTile} onPress={() => openStat('height')}>
+            <Text style={styles.statLabel}>HEIGHT</Text>
+            <Text style={styles.statValue}>{fmtHeight()}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.statTile} onPress={() => openStat('weight')}>
+            <Text style={styles.statLabel}>WEIGHT</Text>
+            <Text style={styles.statValue}>{fmtWeight()}</Text>
+          </TouchableOpacity>
+          <View style={styles.statTile}>
+            <Text style={styles.statLabel}>BMI</Text>
+            <Text style={[styles.statValue, { color: bmiColor }]}>{bmi != null ? (Math.round(bmi * 10) / 10).toFixed(1) : '—'}</Text>
+            {bmi != null && <Text style={[styles.bmiCat, { color: bmiColor }]}>{bmiCategory}</Text>}
+          </View>
+        </View>
+        {bmi != null && (
+          <Text style={styles.bmiCaveat}>BMI is a rough flag — it can't see muscle, water, or your whole story. data, not a verdict.</Text>
+        )}
 
         {/* Mood chip picker */}
         <ChipPicker
@@ -608,6 +685,33 @@ export default function BodyScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Body stat editor (height / weight) */}
+      <Modal visible={!!statsEditor} animationType="slide" transparent onRequestClose={() => setStatsEditor(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.editorScroll}>
+            <View style={styles.editorCard}>
+              <Text style={styles.editorTitle}>{statsEditor?.kind === 'height' ? 'YOUR HEIGHT' : "TODAY'S WEIGHT"}</Text>
+              <Input
+                label={
+                  statsEditor?.kind === 'height'
+                    ? unit === 'imperial' ? 'HEIGHT (inches, e.g. 67)' : 'HEIGHT (cm)'
+                    : unit === 'imperial' ? 'WEIGHT (lb)' : 'WEIGHT (kg)'
+                }
+                value={statsEditor?.value || ''}
+                onChangeText={(t) => setStatsEditor((s) => (s ? { ...s, value: t } : s))}
+                keyboardType="decimal-pad"
+                placeholder="0"
+                autoFocus
+              />
+              <View style={styles.editorActions}>
+                <Button title="CANCEL" onPress={() => setStatsEditor(null)} variant="ghost" />
+                <Button title="SAVE" onPress={saveStat} variant="primary" />
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -624,6 +728,16 @@ const styles = StyleSheet.create({
     fontWeight: '800', letterSpacing: 2,
     marginTop: Spacing.lg, marginBottom: Spacing.sm,
   },
+  sectionHint: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontStyle: 'italic', marginBottom: Spacing.md },
+  statsHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  unitToggle: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: Spacing.sm, paddingVertical: 4, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border, marginTop: Spacing.lg },
+  unitToggleText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '700', letterSpacing: 0.5 },
+  statsRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.sm },
+  statTile: { flex: 1, backgroundColor: Colors.charcoalRaised, borderRadius: BorderRadius.lg, borderWidth: 1, borderColor: Colors.border, padding: Spacing.md, alignItems: 'center' },
+  statLabel: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '700', letterSpacing: 1, marginBottom: 4 },
+  statValue: { fontSize: Typography.fontSize.lg, color: Colors.text, fontWeight: '800' },
+  bmiCat: { fontSize: Typography.fontSize.xs, fontWeight: '700', marginTop: 2 },
+  bmiCaveat: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontStyle: 'italic', marginBottom: Spacing.sm },
   waterRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: Colors.charcoalRaised,

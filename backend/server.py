@@ -86,7 +86,16 @@ class UserResponse(BaseModel):
     nickname: Optional[str] = None
     pepper_spice_level: str
     timezone: str
+    height_cm: Optional[float] = None
+    unit_system: Optional[str] = None  # "metric" | "imperial"
     created_at: datetime
+
+class ProfileUpdate(BaseModel):
+    nickname: Optional[str] = None
+    pepper_spice_level: Optional[Literal["mild", "medium", "extra_spicy"]] = None
+    timezone: Optional[str] = None
+    height_cm: Optional[float] = None
+    unit_system: Optional[Literal["metric", "imperial"]] = None
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -559,6 +568,17 @@ async def login(body: LoginRequest):
 @app.get("/api/auth/me", response_model=UserResponse)
 async def get_me(current: dict = Depends(get_current_user)):
     return UserResponse(**current)
+
+
+@app.put("/api/auth/me", response_model=UserResponse)
+async def update_me(body: ProfileUpdate, current: dict = Depends(get_current_user)):
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if patch:
+        patch["updated_at"] = datetime.utcnow()
+        await users_collection.update_one({"_id": ObjectId(current["id"])}, {"$set": patch})
+    user = await users_collection.find_one({"_id": ObjectId(current["id"])})
+    user["id"] = str(user["_id"])
+    return UserResponse(**user)
 
 # PEPPER Check-In endpoint
 @app.post("/api/pepper/checkin", response_model=AICheckInResponse)
