@@ -18,6 +18,7 @@ import { Button } from '../../src/components/Button';
 import { Input } from '../../src/components/Input';
 import { DatePicker } from '../../src/components/DatePicker';
 import { CompletedCalendar } from '../../src/components/CompletedCalendar';
+import { scheduleReengagement } from '../../src/utils/pepperNudges';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
@@ -29,7 +30,7 @@ import {
 } from '../../src/utils/pepperReactions';
 
 export default function TodayScreen() {
-  const { currentUserId, nickname } = useAppStore();
+  const { currentUserId, nickname, notifications } = useAppStore();
   const [todayEntry, setTodayEntry] = useState<any>(null);
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskModal, setTaskModal] = useState(false);
@@ -66,7 +67,11 @@ export default function TodayScreen() {
     }
   };
 
-  useFocusEffect(useCallback(() => { loadAll(); }, []));
+  useFocusEffect(useCallback(() => {
+    loadAll();
+    // User is active again — reset PEPPER's away-clock / mood ladder.
+    if (notifications?.enabled) scheduleReengagement().catch(() => {});
+  }, [notifications?.enabled]));
   useEffect(() => { loadAll(); }, []);
 
   const toggleCheck = async (field: string, current: boolean) => {

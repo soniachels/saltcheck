@@ -22,6 +22,7 @@ import {
   scheduleDailyReminders,
   cancelAllReminders,
 } from '../src/utils/notifications';
+import { scheduleReengagement, cancelNudges, sendTestNudge } from '../src/utils/pepperNudges';
 import apiClient from '../src/services/api';
 import { logoutAccount } from '../src/services/auth';
 
@@ -76,6 +77,7 @@ export default function SettingsScreen() {
   const applyReminders = async (next: typeof notifications) => {
     if (!next.enabled) {
       await cancelAllReminders();
+      await cancelNudges();
       return;
     }
     const ok = await ensurePermissions();
@@ -99,6 +101,8 @@ export default function SettingsScreen() {
       eveningEnabled: next.evening_enabled,
       evening: { hour: next.evening_hour, minute: next.evening_minute },
     });
+    // PEPPER's mood-driven re-engagement ladder (resets each app open).
+    await scheduleReengagement();
   };
 
   const toggleNotifications = async (val: boolean) => {
@@ -357,6 +361,25 @@ export default function SettingsScreen() {
                   </View>
                 )}
               </View>
+
+              {/* PEPPER mood nudges */}
+              <View style={styles.divider} />
+              <Text style={styles.toggleLabel}>PEPPER's mood nudges</Text>
+              <Text style={styles.hintText}>
+                When you've been away, PEPPER nudges you back — her tone shifts the longer it's been
+                (sweet → bored → moody → jealous → desperate, with the rare love-bomb).
+              </Text>
+              <TouchableOpacity
+                style={styles.previewNudgeBtn}
+                onPress={async () => {
+                  await sendTestNudge();
+                  Alert.alert('Incoming', 'A random-mood nudge will land in ~3 seconds. Background the app to see it.');
+                }}
+              >
+                <Ionicons name="notifications" size={16} color={Colors.inkBlack} />
+                <Text style={styles.previewNudgeText}>PREVIEW A NUDGE</Text>
+              </TouchableOpacity>
+
               <Text style={styles.hintText}>
                 Push only works on real devices after publishing & generating a build.
               </Text>
@@ -521,6 +544,12 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     textAlign: 'center',
   },
+  previewNudgeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.pickleLime, borderRadius: BorderRadius.full,
+    paddingVertical: Spacing.sm, marginTop: Spacing.sm,
+  },
+  previewNudgeText: { fontSize: Typography.fontSize.xs, color: Colors.inkBlack, fontWeight: '800', letterSpacing: 1 },
   dangerRow: {
     flexDirection: 'row',
     alignItems: 'center',
