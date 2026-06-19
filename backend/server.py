@@ -158,6 +158,9 @@ class TaskCreate(BaseModel):
     status: Literal["not_started", "in_progress", "waiting", "done", "parked"] = "not_started"
     notes: Optional[str] = None
     parked: bool = False
+    time: Optional[str] = None  # "HH:MM" 24h — for time-aware day ordering
+    subtasks: Optional[List[dict]] = None  # [{title: str, done: bool}]
+    completed_at: Optional[datetime] = None  # set when status -> done (for the calendar)
 
 class TaskResponse(BaseModel):
     id: str
@@ -169,6 +172,9 @@ class TaskResponse(BaseModel):
     status: str
     notes: Optional[str] = None
     parked: bool
+    time: Optional[str] = None
+    subtasks: Optional[List[dict]] = None
+    completed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -328,7 +334,7 @@ Format your response as JSON with these keys:
   "quick_read": "One line emotional read",
   "salt_check": ["Move 1", "Move 2", "Move 3"],
   "loops_to_create": [
-    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "linked_priority_index": 0}
+    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "linked_priority_index": 0}
   ],
   "parked": ["Item 1", "Item 2"],
   "money_check": "One money-related insight or null",
@@ -337,9 +343,24 @@ Format your response as JSON with these keys:
   "closer": "Optional spicy closer",
   "bills": [{"label": "rent", "amount": 1200, "due_date": "2026-06-15", "recurring": "monthly"}],
   "income": [{"label": "freelance invoice", "amount": 800, "expected_date": "2026-06-10", "recurring": null}],
+  "contradictions": [{"existing": "the existing loop this clashes with", "new": "the new thing from the dump", "question": "short question to resolve it"}],
   "needs_clarity": false,
   "clarity_questions": []
 }
+
+ADDITIVE BEHAVIOR (critical):
+- After the dump you may be given EXISTING OPEN LOOPS and TODAY'S CURRENT TOP 3. Treat the new dump as ADDITIONS to the day, never a replacement.
+- Do NOT recreate a loop that already exists (match loosely on meaning, not exact words). Only put genuinely NEW loops in loops_to_create.
+- salt_check is the UPDATED top 3 = the most urgent of (existing not-yet-done priorities + new urgent items). Still MAX 3. Everything else goes to loops_to_create.
+
+CONTRADICTIONS:
+- If the dump clashes with an existing loop (reschedules it, cancels it, replaces it, or double-books the same time), add a `contradictions` entry: the existing loop, the new thing, and a short question to resolve it. Keep going with your best guess; set needs_clarity true ONLY if you genuinely cannot give a useful plan without the answer.
+
+WORK PRECEDENCE:
+- If two or more WORK tasks compete for the same top slot and you can't tell which wins, add a clarity_question like "which is more urgent — X or Y?".
+
+SUBTASKS:
+- If a loop has multiple steps, list them in `subtasks` (array of short strings). NEVER cram multiple steps into one title, and NEVER pile several actions into a single salt_check item.
 
 STRICT RULES FOR CLASSIFICATION (read carefully):
 
@@ -577,10 +598,33 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 system_message=tuned_system_prompt
             ).with_model("openai", "gpt-4.1")
             
-            user_message = UserMessage(
-                text=f"User dump: {checkin.raw_dump}\n\nRespond with the structured JSON format as specified in your system prompt."
+            # Give PEPPER the user's current open loops + today's plan so new
+            # dumps ADD to the day (not overwrite) and contradictions surface.
+            import json as _json
+            existing_tasks = []
+            async for t in tasks_collection.find(
+                {"user_id": user_id, "parked": {"$ne": True}, "status": {"$ne": "done"}}
+            ).limit(40):
+                existing_tasks.append({
+                    "title": t.get("title"),
+                    "next_action": t.get("next_action"),
+                    "deadline": t.get("deadline"),
+                    "time": t.get("time"),
+                })
+            today_doc = await daily_entries_collection.find_one(
+                {"user_id": user_id, "date": datetime.utcnow().strftime("%Y-%m-%d")}
             )
-            
+            existing_priorities = (today_doc or {}).get("top_priorities", []) or []
+            context_block = (
+                f"\n\nEXISTING OPEN LOOPS (do NOT duplicate these; ADD to them and flag contradictions): "
+                f"{_json.dumps(existing_tasks)}"
+                f"\nTODAY'S CURRENT TOP 3: {_json.dumps(existing_priorities)}"
+            )
+
+            user_message = UserMessage(
+                text=f"User dump: {checkin.raw_dump}{context_block}\n\nRespond with the structured JSON format as specified in your system prompt."
+            )
+
             response = await chat.send_message(user_message)
             
             # Parse AI response
@@ -635,11 +679,19 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 title = (loop_spec.get("title") or "").strip()
                 if not title:
                     continue
+                # Normalize subtasks into [{title, done}] shape.
+                raw_subs = loop_spec.get("subtasks") or []
+                subtasks = [
+                    {"title": str(s).strip(), "done": False}
+                    for s in raw_subs if isinstance(s, (str, int, float)) and str(s).strip()
+                ] if isinstance(raw_subs, list) else []
                 task_doc = {
                     "user_id": user_id,
                     "title": title,
                     "next_action": loop_spec.get("next_action") or None,
                     "deadline": loop_spec.get("deadline") or None,
+                    "time": loop_spec.get("time") or None,
+                    "subtasks": subtasks,
                     "status": "not_started",
                     "parked": False,
                     "created_at": datetime.utcnow(),
@@ -679,19 +731,21 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         
         existing_entry = await daily_entries_collection.find_one({"user_id": user_id, "date": today_str})
         if existing_entry:
-            # Preserve checkbox state and priorities_done on update
-            preserved_done = existing_entry.get("priorities_done", [])
+            # Preserve checkbox state by MATCHING TITLE (dumps now append/reorder
+            # priorities, so index alignment would carry the wrong done flags).
+            prev_priorities = existing_entry.get("priorities_done", [])
+            prev_titles = existing_entry.get("top_priorities", []) or []
             preserved_ids = existing_entry.get("priorities_task_ids", [])
+            done_by_title = {
+                (prev_titles[i] or "").strip().lower(): bool(prev_priorities[i])
+                for i in range(min(len(prev_titles), len(prev_priorities)))
+            }
             new_priorities = salt_check_items[:3]
-            # Re-align done flags + task IDs with new priorities.
             aligned_done = []
             aligned_ids = []
             for i in range(len(new_priorities)):
-                if i < len(preserved_done):
-                    aligned_done.append(preserved_done[i])
-                else:
-                    aligned_done.append(False)
-                # Prefer new task ids; fall back to existing
+                aligned_done.append(done_by_title.get((new_priorities[i] or "").strip().lower(), False))
+                # Prefer new task ids; fall back to existing by position
                 if priorities_task_ids[i]:
                     aligned_ids.append(priorities_task_ids[i])
                 elif i < len(preserved_ids):
@@ -929,6 +983,14 @@ async def get_tasks(user_id: str, current: dict = Depends(get_current_user)):
 async def update_task(task_id: str, task: TaskCreate, current: dict = Depends(get_current_user)):
     task_dict = task.model_dump()
     task_dict["updated_at"] = datetime.utcnow()
+
+    # Stamp completed_at when a task is marked done; clear it if un-done.
+    # (Preserve an existing timestamp so re-saving a done task doesn't move it.)
+    if task_dict.get("status") == "done":
+        existing = await tasks_collection.find_one({"_id": ObjectId(task_id), "user_id": current["id"]})
+        task_dict["completed_at"] = (existing or {}).get("completed_at") or datetime.utcnow()
+    else:
+        task_dict["completed_at"] = None
 
     result = await tasks_collection.update_one(
         {"_id": ObjectId(task_id), "user_id": current["id"]},

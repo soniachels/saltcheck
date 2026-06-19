@@ -17,6 +17,7 @@ import { PepperBubble } from '../../src/components/PepperBubble';
 import { Button } from '../../src/components/Button';
 import { Input } from '../../src/components/Input';
 import { DatePicker } from '../../src/components/DatePicker';
+import { CompletedCalendar } from '../../src/components/CompletedCalendar';
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
@@ -33,8 +34,11 @@ export default function TodayScreen() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
-  const [taskForm, setTaskForm] = useState({ title: '', next_action: '', deadline: '' });
+  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[] }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [] });
+  const [subtaskDraft, setSubtaskDraft] = useState('');
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
+  const [dayDone, setDayDone] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [overdueNudgeSeed] = useState(() => Math.floor(Math.random() * 100));
 
   const today = new Date().toISOString().split('T')[0];
@@ -87,11 +91,12 @@ export default function TodayScreen() {
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
-      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '' });
+      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [] });
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', next_action: '', deadline: '' });
+      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [] });
     }
+    setSubtaskDraft('');
     setTaskModal(true);
   };
 
@@ -104,6 +109,8 @@ export default function TodayScreen() {
       title: taskForm.title,
       next_action: taskForm.next_action,
       deadline: taskForm.deadline,
+      time: taskForm.time.trim() || null,
+      subtasks: taskForm.subtasks,
       status: editingTask?.status || 'not_started',
       parked: editingTask?.parked || false,
     };
@@ -242,18 +249,74 @@ export default function TodayScreen() {
     loadAll();
   };
 
+  const BURNOUT_THRESHOLD = 6;
+
+  // Promote the next active loops into the Top 3 (with a burnout gut-check).
+  const loadNext3 = async () => {
+    if (!todayEntry) return;
+    const proceed = async () => {
+      const currentTitles = new Set((todayEntry.top_priorities || []).map((p: string) => p.toLowerCase()));
+      const candidates = otherActiveTasks
+        .filter((t) => !currentTitles.has((t.title || '').toLowerCase()))
+        .slice(0, 3);
+      if (candidates.length === 0) {
+        Alert.alert('Nothing queued', "No more loops to promote. Dump to PEPPER or call it a day.");
+        return;
+      }
+      const newPriorities = candidates.map((t) => t.title);
+      const updated = {
+        ...todayEntry,
+        top_priorities: newPriorities,
+        priorities_done: newPriorities.map(() => false),
+        priorities_task_ids: candidates.map((t) => t.id),
+      };
+      delete (updated as any).id; delete (updated as any).user_id;
+      delete (updated as any).created_at; delete (updated as any).updated_at;
+      const r = await apiClient.put(`/daily-entries/${todayEntry.id}`, updated);
+      setTodayEntry(r.data);
+      loadAll();
+    };
+
+    if (completedTodayCount >= BURNOUT_THRESHOLD) {
+      Alert.alert(
+        'Burnout check',
+        `That's ${completedTodayCount} done today. Loading more is how you crash tomorrow. Sure?`,
+        [
+          { text: 'Call it', style: 'cancel', onPress: () => setDayDone(true) },
+          { text: 'Load 3 anyway', style: 'destructive', onPress: proceed },
+        ]
+      );
+    } else {
+      proceed();
+    }
+  };
+
+  // Order by time-of-day: timed tasks first (chronological), untimed last.
+  const byTime = (a: any, b: any) => (a.time || '99:99').localeCompare(b.time || '99:99');
+
   const activeTasks = tasks.filter((t) => !t.parked && t.status !== 'done');
   const doneTasks = tasks.filter((t) => t.status === 'done');
   const parkedTasks = tasks.filter((t) => t.parked);
 
-  // Deadline-aware bucketing
+  // Deadline-aware bucketing (each bucket ordered by time-of-day)
   const overdueTasks = activeTasks.filter(
     (t) => t.deadline && t.deadline < today
-  );
-  const dueTodayTasks = activeTasks.filter((t) => t.deadline === today);
+  ).sort(byTime);
+  const dueTodayTasks = activeTasks.filter((t) => t.deadline === today).sort(byTime);
   const otherActiveTasks = activeTasks.filter(
     (t) => !t.deadline || t.deadline > today
-  );
+  ).sort(byTime);
+
+  // Toggle a subtask's done flag and persist.
+  const toggleSubtask = async (task: any, idx: number) => {
+    const subtasks = (task.subtasks || []).slice();
+    if (!subtasks[idx]) return;
+    subtasks[idx] = { ...subtasks[idx], done: !subtasks[idx].done };
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, subtasks } : t)));
+    const payload = { ...task, subtasks };
+    delete payload.id; delete payload.user_id; delete payload.created_at; delete payload.updated_at;
+    try { await apiClient.put(`/tasks/${task.id}`, payload); } catch { loadAll(); }
+  };
 
   // Priority completion state
   const priorities: string[] = todayEntry?.top_priorities || [];
@@ -261,6 +324,11 @@ export default function TodayScreen() {
   const allTopDone =
     priorities.length > 0 &&
     priorities.every((_, i) => !!prioritiesDone[i]);
+
+  // How many loops were completed today (drives the burnout warning).
+  const completedTodayCount = doneTasks.filter(
+    (t) => (t.completed_at || '').slice(0, 10) === today
+  ).length;
 
   const greeting = getPepperGreeting(todayDate);
   const heroGreeting = greeting.greeting(nickname);
@@ -349,9 +417,22 @@ export default function TodayScreen() {
                 </TouchableOpacity>
               );
             })}
-            {allTopDone && (
+            {allTopDone && !dayDone && (
+              <View style={styles.nextWrap}>
+                <PepperBubble label="* PEPPER" variant="lime">
+                  {completedTodayCount >= BURNOUT_THRESHOLD
+                    ? `that's ${completedTodayCount} done today. legend — but you're flirting with burnout. i'd call it.`
+                    : `top 3 done. next 3, or are we done for the day?`}
+                </PepperBubble>
+                <View style={styles.nextRow}>
+                  <Button title="NEXT 3" onPress={loadNext3} variant="secondary" style={{ flex: 1 }} />
+                  <Button title="DONE FOR TODAY" onPress={() => setDayDone(true)} variant="primary" style={{ flex: 1 }} />
+                </View>
+              </View>
+            )}
+            {allTopDone && dayDone && (
               <PepperBubble label="* PEPPER" variant="lime" style={{ marginTop: Spacing.sm }}>
-                TOP 3 DONE. now go drink water and log off.
+                {completedTodayCount} done today. close the laptop. drink water. we go again tomorrow.
               </PepperBubble>
             )}
           </>
@@ -460,28 +541,45 @@ export default function TodayScreen() {
             (everything above is on the clock)
           </Text>
         ) : (
-          otherActiveTasks.map((task) => (
-            <CategoryCard
-              key={task.id}
-              title={task.title}
-              subtitle={
-                task.next_action
-                  ? `→ ${task.next_action}`
-                  : task.deadline
-                  ? `due ${task.deadline}`
-                  : 'tap to update'
-              }
-              variant="dark"
-              onPress={() => openTaskEditor(task)}
-              rightSlot={
-                <TouchableOpacity onPress={() => cycleStatus(task)} style={styles.statusChip}>
-                  <Text style={styles.statusChipText}>
-                    {task.status === 'in_progress' ? '◐' : task.status === 'waiting' ? '◑' : '○'}
-                  </Text>
-                </TouchableOpacity>
-              }
-            />
-          ))
+          otherActiveTasks.map((task) => {
+            const subs = (task.subtasks || []) as { title: string; done: boolean }[];
+            const doneCount = subs.filter((s) => s.done).length;
+            return (
+              <View key={task.id}>
+                <CategoryCard
+                  title={`${task.time ? task.time + '  ·  ' : ''}${task.title}`}
+                  subtitle={
+                    subs.length > 0
+                      ? `${doneCount}/${subs.length} steps${task.next_action ? `  ·  → ${task.next_action}` : ''}`
+                      : task.next_action
+                      ? `→ ${task.next_action}`
+                      : task.deadline
+                      ? `due ${task.deadline}`
+                      : 'tap to update'
+                  }
+                  variant="dark"
+                  onPress={() => openTaskEditor(task)}
+                  rightSlot={
+                    <TouchableOpacity onPress={() => cycleStatus(task)} style={styles.statusChip}>
+                      <Text style={styles.statusChipText}>
+                        {task.status === 'in_progress' ? '◐' : task.status === 'waiting' ? '◑' : '○'}
+                      </Text>
+                    </TouchableOpacity>
+                  }
+                />
+                {subs.length > 0 && (
+                  <View style={styles.subtaskNest}>
+                    {subs.map((st, i) => (
+                      <TouchableOpacity key={i} style={styles.subtaskNestRow} onPress={() => toggleSubtask(task, i)}>
+                        <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
+                        <Text style={[styles.subtaskNestText, st.done && styles.subtaskTextDone]}>{st.title}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+            );
+          })
         )}
 
         {parkedTasks.length > 0 && (
@@ -503,6 +601,10 @@ export default function TodayScreen() {
           <>
             <Text style={[styles.sectionLabel, { marginTop: Spacing.lg }]}>DONE.</Text>
             <Text style={styles.sectionHint}>{doneTasks.length} loops closed.</Text>
+            <TouchableOpacity style={styles.calendarBtn} onPress={() => setCalendarOpen(true)}>
+              <Ionicons name="calendar-outline" size={16} color={Colors.text} />
+              <Text style={styles.calendarBtnText}>VIEW DONE CALENDAR</Text>
+            </TouchableOpacity>
           </>
         )}
 
@@ -514,6 +616,8 @@ export default function TodayScreen() {
 
         <View style={{ height: 100 }} />
       </ScrollView>
+
+      <CompletedCalendar visible={calendarOpen} onClose={() => setCalendarOpen(false)} tasks={tasks} />
 
       {/* Task editor */}
       <Modal visible={taskModal} animationType="slide" transparent>
@@ -540,6 +644,60 @@ export default function TodayScreen() {
                 placeholder="Pick a deadline (optional)"
                 variant="red"
               />
+              <Input
+                label="TIME (optional, HH:MM)"
+                value={taskForm.time}
+                onChangeText={(t) => setTaskForm({ ...taskForm, time: t })}
+                placeholder="14:30"
+                keyboardType="numbers-and-punctuation"
+                maxLength={5}
+              />
+
+              {/* Subtasks */}
+              <Text style={styles.subtaskHeader}>SUBTASKS</Text>
+              {taskForm.subtasks.map((st, i) => (
+                <View key={i} style={styles.subtaskRow}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const next = taskForm.subtasks.slice();
+                      next[i] = { ...next[i], done: !next[i].done };
+                      setTaskForm({ ...taskForm, subtasks: next });
+                    }}
+                  >
+                    <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
+                  </TouchableOpacity>
+                  <Text style={[styles.subtaskText, st.done && styles.subtaskTextDone]}>{st.title}</Text>
+                  <TouchableOpacity onPress={() => setTaskForm({ ...taskForm, subtasks: taskForm.subtasks.filter((_, j) => j !== i) })}>
+                    <Ionicons name="close" size={18} color={Colors.steelBlueGrey} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <View style={styles.subtaskAddRow}>
+                <Input
+                  value={subtaskDraft}
+                  onChangeText={setSubtaskDraft}
+                  placeholder="Add a step…"
+                  style={{ flex: 1 }}
+                  onSubmitEditing={() => {
+                    if (subtaskDraft.trim()) {
+                      setTaskForm({ ...taskForm, subtasks: [...taskForm.subtasks, { title: subtaskDraft.trim(), done: false }] });
+                      setSubtaskDraft('');
+                    }
+                  }}
+                />
+                <TouchableOpacity
+                  style={styles.subtaskAddBtn}
+                  onPress={() => {
+                    if (subtaskDraft.trim()) {
+                      setTaskForm({ ...taskForm, subtasks: [...taskForm.subtasks, { title: subtaskDraft.trim(), done: false }] });
+                      setSubtaskDraft('');
+                    }
+                  }}
+                >
+                  <Ionicons name="add" size={22} color={Colors.inkBlack} />
+                </TouchableOpacity>
+              </View>
+
               <View style={styles.editorActions}>
                 <Button title="CANCEL" onPress={() => setTaskModal(false)} variant="ghost" />
                 <Button title="SAVE" onPress={saveTask} variant="primary" />
@@ -732,5 +890,18 @@ const styles = StyleSheet.create({
   editorScroll: { padding: Layout.screenPadding, paddingTop: 80 },
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
   editorTitle: { fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 1, marginBottom: Spacing.lg },
+  subtaskHeader: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '800', letterSpacing: 1, marginTop: Spacing.md, marginBottom: Spacing.sm },
+  subtaskRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 5 },
+  subtaskText: { flex: 1, fontSize: Typography.fontSize.base, color: Colors.text },
+  subtaskTextDone: { textDecorationLine: 'line-through', color: Colors.textSubtle },
+  subtaskAddRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  subtaskAddBtn: { width: 40, height: 40, borderRadius: BorderRadius.md, backgroundColor: Colors.pickleLime, alignItems: 'center', justifyContent: 'center', marginBottom: Layout.componentGap },
+  calendarBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: Spacing.sm, marginTop: Spacing.sm, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border },
+  calendarBtnText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '800', letterSpacing: 1 },
+  nextWrap: { marginTop: Spacing.sm, gap: Spacing.sm },
+  nextRow: { flexDirection: 'row', gap: Spacing.sm },
+  subtaskNest: { paddingLeft: Spacing.lg, marginTop: -4, marginBottom: Spacing.sm, gap: 4 },
+  subtaskNestRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
+  subtaskNestText: { fontSize: Typography.fontSize.sm, color: Colors.textSubtle },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
 });

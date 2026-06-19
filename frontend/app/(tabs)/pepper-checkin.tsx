@@ -215,6 +215,23 @@ export default function PepperCheckinScreen() {
                   </>
                 )}
 
+              {Array.isArray(response.ai_response.contradictions) &&
+                response.ai_response.contradictions.length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>HOLD ON — THIS CLASHES.</Text>
+                    <Text style={styles.sectionHint}>you already had these. clear it up, then dump again.</Text>
+                    {response.ai_response.contradictions.map((c: any, i: number) => (
+                      <CategoryCard
+                        key={i}
+                        title={c.question || 'Which one wins?'}
+                        subtitle={`was: ${c.existing || '—'}  →  now: ${c.new || '—'}`}
+                        icon="git-compare"
+                        variant="red"
+                      />
+                    ))}
+                  </>
+                )}
+
               {response.ai_response.salt_check &&
                 response.ai_response.salt_check.length > 0 && (
                   <>
