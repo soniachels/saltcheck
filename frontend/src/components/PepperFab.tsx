@@ -27,7 +27,6 @@ import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 
 // ---- Animation tuning (tweak these) ----
 const ORB_SPIN_MS = 7000;      // gradient swirl speed (higher = slower)
-const GLOW_BREATH_MS = 2000;   // idle glow pulse half-cycle
 const CARD_IN_DAMPING = 15;    // card spring: lower = bouncier
 const CARD_IN_STIFFNESS = 150; // card spring: higher = snappier
 const CARD_OUT_MS = 220;       // close animation duration
@@ -53,25 +52,17 @@ export const PepperFab: React.FC = () => {
 
   // Animated values
   const spin = useRef(new Animated.Value(0)).current;       // orb gradient swirl (idle loop)
-  const glow = useRef(new Animated.Value(0)).current;        // orb glow breathing (idle loop)
   const pressScale = useRef(new Animated.Value(1)).current;  // orb tap pulse
   const card = useRef(new Animated.Value(0)).current;        // card open/close 0→1
 
-  // Idle loops — the orb feels alive even when untouched.
+  // Idle loop — the orb's gradient keeps swirling even when untouched.
   useEffect(() => {
     const spinLoop = Animated.loop(
       Animated.timing(spin, { toValue: 1, duration: ORB_SPIN_MS, easing: Easing.linear, useNativeDriver: true })
     );
-    const glowLoop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(glow, { toValue: 1, duration: GLOW_BREATH_MS, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(glow, { toValue: 0, duration: GLOW_BREATH_MS, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-      ])
-    );
     spinLoop.start();
-    glowLoop.start();
-    return () => { spinLoop.stop(); glowLoop.stop(); };
-  }, [spin, glow]);
+    return () => { spinLoop.stop(); };
+  }, [spin]);
 
   const openSheet = () => {
     // Orb reacts: quick pulse 1 → 1.06 → 1
@@ -143,16 +134,6 @@ export const PepperFab: React.FC = () => {
     <>
       {/* ---- The living orb ---- */}
       <View style={styles.orbWrap} pointerEvents="box-none">
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.glow,
-            {
-              opacity: glow.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0.6] }),
-              transform: [{ scale: glow.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] }) }],
-            },
-          ]}
-        />
         <Animated.View style={{ transform: [{ scale: pressScale }] }}>
           <TouchableOpacity
             style={styles.orb}
@@ -362,17 +343,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 50,
-  },
-  glow: {
-    position: 'absolute',
-    width: 84,
-    height: 84,
-    borderRadius: 42,
-    backgroundColor: Colors.brightRed,
-    shadowColor: Colors.brightRed,
-    shadowOpacity: 0.9,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 0 },
   },
   orb: {
     width: ORB,
