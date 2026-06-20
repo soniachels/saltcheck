@@ -171,6 +171,8 @@ class TaskCreate(BaseModel):
     subtasks: Optional[List[dict]] = None  # [{title: str, done: bool}]
     completed_at: Optional[datetime] = None  # set when status -> done (for the calendar)
     non_negotiable: Optional[bool] = False  # must-do today; protected from parking/bumping
+    kind: Optional[str] = "task"  # "task" | "appointment"
+    scheduled_date: Optional[str] = None  # YYYY-MM-DD — which day it's planned for
 
 class TaskResponse(BaseModel):
     id: str
@@ -186,6 +188,8 @@ class TaskResponse(BaseModel):
     subtasks: Optional[List[dict]] = None
     completed_at: Optional[datetime] = None
     non_negotiable: Optional[bool] = False
+    kind: Optional[str] = "task"
+    scheduled_date: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -987,6 +991,83 @@ async def dedupe_loops(current: dict = Depends(get_current_user)):
             "items": [{"id": i, "title": by_id[i]} for i in ids],
         })
     return {"groups": clean}
+
+
+ORGANIZE_PROMPT = """You are PEPPER, organizing the user's week. You get TODAY's date and their OPEN LOOPS (id, title, time, deadline, non_negotiable, kind).
+Build a realistic plan that spreads the work across days starting from today.
+
+Rules:
+- Non-negotiables and items with a near deadline get priority and earlier days/times.
+- Appointments (kind="appointment") keep their existing day+time — never move them.
+- Give each loop a scheduled_date (YYYY-MM-DD, today or later) and, when sensible, a time (HH:MM, daytime hours). Don't cram everything into one day — aim for 2-4 meaningful loops per day.
+- If a loop is too vague to place well (unclear context, length, or timing), still give a best-effort slot BUT add a clarify question.
+
+Return JSON ONLY:
+{
+  "plan": [{"task_id": "...", "scheduled_date": "YYYY-MM-DD", "time": "HH:MM or null", "rank": 1, "reason": "short why"}],
+  "clarify": [{"task_id": "...", "title": "...", "question": "short question about time/context"}]
+}"""
+
+
+class OrganizeRequest(BaseModel):
+    start_date: str  # YYYY-MM-DD
+
+
+@app.post("/api/pepper/organize")
+async def organize_loops(body: OrganizeRequest, current: dict = Depends(get_current_user)):
+    """PEPPER ranks all open loops and spreads them across days/times."""
+    user_id = current["id"]
+    import json as _json
+    loops = []
+    async for t in tasks_collection.find(
+        {"user_id": user_id, "status": {"$ne": "done"}, "parked": {"$ne": True}}
+    ):
+        loops.append({
+            "id": str(t["_id"]),
+            "title": t.get("title") or "",
+            "time": t.get("time"),
+            "deadline": t.get("deadline"),
+            "non_negotiable": bool(t.get("non_negotiable")),
+            "kind": t.get("kind") or "task",
+        })
+    if not loops:
+        return {"plan": [], "clarify": []}
+
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"organize_{user_id}_{datetime.utcnow().timestamp()}",
+            system_message=ORGANIZE_PROMPT,
+        ).with_model("openai", "gpt-4.1")
+        resp = await chat.send_message(UserMessage(text=f"TODAY: {body.start_date}\nOPEN LOOPS: {_json.dumps(loops)}\n\nReturn the JSON."))
+        try:
+            data = _json.loads(resp)
+        except Exception:
+            s = resp[resp.find("{"): resp.rfind("}") + 1]
+            data = _json.loads(s)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"PEPPER couldn't plan: {str(e)}")
+
+    by_id = {l["id"]: l for l in loops}
+    plan = []
+    for p in (data.get("plan") or []):
+        tid = p.get("task_id")
+        if tid in by_id:
+            plan.append({
+                "task_id": tid,
+                "title": by_id[tid]["title"],
+                "scheduled_date": p.get("scheduled_date"),
+                "time": (p.get("time") if p.get("time") not in ("null", "") else None),
+                "rank": p.get("rank"),
+                "reason": p.get("reason") or "",
+                "non_negotiable": by_id[tid]["non_negotiable"],
+                "kind": by_id[tid]["kind"],
+            })
+    plan.sort(key=lambda x: (x.get("scheduled_date") or "9999", x.get("time") or "99:99", x.get("rank") or 99))
+    clarify = [c for c in (data.get("clarify") or []) if c.get("task_id") in by_id]
+    return {"plan": plan, "clarify": clarify}
 
 @app.get("/api/pepper/history/{user_id}", response_model=List[AICheckInResponse])
 async def get_pepper_history(user_id: str, limit: int = 10, current: dict = Depends(get_current_user)):

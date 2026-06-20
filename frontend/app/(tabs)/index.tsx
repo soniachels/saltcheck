@@ -46,7 +46,7 @@ export default function TodayScreen() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
-  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false });
+  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task' });
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
@@ -98,6 +98,42 @@ export default function TodayScreen() {
   };
 
   const dismissGroup = (group: any) => setDedupeGroups((prev) => prev.filter((g) => g !== group));
+
+  // --- PEPPER "organize" (rank + schedule across days) ---
+  const [planModal, setPlanModal] = useState(false);
+  const [plan, setPlan] = useState<any[]>([]);
+  const [planClarify, setPlanClarify] = useState<any[]>([]);
+  const [planLoading, setPlanLoading] = useState(false);
+
+  const organizeDay = async () => {
+    setPlanLoading(true);
+    try {
+      const r = await apiClient.post('/pepper/organize', { start_date: today }, { params: { user_id: currentUserId } });
+      const p = r.data?.plan || [];
+      setPlan(p);
+      setPlanClarify(r.data?.clarify || []);
+      if (!p.length) Alert.alert('Nothing to plan', 'No open loops to organize.');
+      else setPlanModal(true);
+    } catch (e) {
+      Alert.alert('Hmm', "PEPPER couldn't plan right now.");
+    } finally {
+      setPlanLoading(false);
+    }
+  };
+
+  const applyPlan = async () => {
+    try {
+      await Promise.all(plan.map((p) => {
+        const task = tasks.find((t) => t.id === p.task_id);
+        if (!task) return Promise.resolve(null);
+        const payload: any = { ...task, scheduled_date: p.scheduled_date || null, time: p.time || task.time || null };
+        delete payload.id; delete payload.user_id; delete payload.created_at; delete payload.updated_at;
+        return apiClient.put(`/tasks/${p.task_id}`, payload);
+      }));
+    } catch (e) { console.error(e); }
+    setPlanModal(false);
+    loadAll();
+  };
 
   const toggleExpand = (id: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.create(220, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
@@ -159,10 +195,10 @@ export default function TodayScreen() {
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
-      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable });
+      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task' });
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false });
+      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task' });
     }
     setSubtaskDraft('');
     setTaskModal(true);
@@ -180,6 +216,8 @@ export default function TodayScreen() {
       time: taskForm.time.trim() || null,
       subtasks: taskForm.subtasks,
       non_negotiable: taskForm.non_negotiable,
+      kind: taskForm.kind,
+      scheduled_date: editingTask?.scheduled_date || null,
       status: editingTask?.status || 'not_started',
       parked: editingTask?.parked || false,
     };
@@ -377,13 +415,16 @@ export default function TodayScreen() {
     (t) => !t.deadline || t.deadline > today
   ).sort(byTime);
 
-  // Day timeline = tasks with a time; everything else is an open loop.
-  const timedTasks = activeTasks.filter((t) => t.time).sort(byTime);
-  // Untimed loops: non-negotiables float to the top, then by time-of-day.
-  const untimedTasks = activeTasks
-    .filter((t) => !t.time)
-    .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b));
   const selectedIsToday = selectedDate === today;
+  // Day timeline = tasks planned for the selected day. Back-compat: a timed task
+  // with no scheduled_date belongs to "today".
+  const timedTasks = activeTasks
+    .filter((t) => (t.scheduled_date ? t.scheduled_date === selectedDate : (t.time && selectedIsToday)))
+    .sort(byTime);
+  // Open Loops = the unscheduled backlog (no day, no time). Non-negotiables float up.
+  const untimedTasks = activeTasks
+    .filter((t) => !t.scheduled_date && !t.time)
+    .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b));
 
   // Toggle a subtask's done flag and persist.
   const toggleSubtask = async (task: any, idx: number) => {
@@ -512,6 +553,16 @@ export default function TodayScreen() {
           </View>
         )}
 
+        {/* Organize / plan my days */}
+        {untimedTasks.length > 0 && (
+          <TouchableOpacity style={styles.organizeBtn} onPress={organizeDay} disabled={planLoading} testID="organize-btn">
+            {planLoading
+              ? <ActivityIndicator size="small" color={Colors.inkBlack} />
+              : <Ionicons name="sparkles" size={16} color={Colors.inkBlack} />}
+            <Text style={styles.organizeText}>{planLoading ? 'PEPPER IS PLANNING…' : 'ORGANIZE MY DAYS'}</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Top 3 — now checkable */}
         {priorities.length > 0 && (
           <>
@@ -593,24 +644,30 @@ export default function TodayScreen() {
             <Text style={styles.sectionLabel}>DAY TIMELINE.</Text>
             <Text style={styles.sectionHint}>your day, roughly in order.</Text>
             <View style={styles.timeline}>
-              {timedTasks.map((t, idx) => (
-                <View key={t.id} style={styles.tlRow}>
-                  <Text style={styles.tlTime}>{t.time}</Text>
-                  <View style={styles.tlLineCol}>
-                    <View style={styles.tlDot} />
-                    {idx < timedTasks.length - 1 && <View style={styles.tlLine} />}
-                  </View>
-                  <TouchableOpacity style={styles.tlCard} activeOpacity={0.85} onPress={() => openTaskEditor(t)}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.tlCardTitle} numberOfLines={1}>{t.title}</Text>
-                      {t.next_action ? <Text style={styles.tlCardSub} numberOfLines={1}>→ {t.next_action}</Text> : null}
+              {timedTasks.map((t, idx) => {
+                const isAppt = t.kind === 'appointment';
+                return (
+                  <View key={t.id} style={styles.tlRow}>
+                    <Text style={[styles.tlTime, isAppt && { color: Colors.softSpiceLilac }]}>{t.time || '—'}</Text>
+                    <View style={styles.tlLineCol}>
+                      <View style={[styles.tlDot, isAppt && styles.tlDotAppt]} />
+                      {idx < timedTasks.length - 1 && <View style={styles.tlLine} />}
                     </View>
-                    <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(t)}>
-                      <Text style={styles.statusChipText}>{statusGlyph(t.status)}</Text>
+                    <TouchableOpacity style={[styles.tlCard, isAppt && styles.tlCardAppt]} activeOpacity={0.85} onPress={() => openTaskEditor(t)}>
+                      {isAppt
+                        ? <Ionicons name="calendar" size={15} color={Colors.softSpiceLilac} />
+                        : t.non_negotiable ? <Ionicons name="lock-closed" size={12} color={Colors.brightRed} /> : null}
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.tlCardTitle} numberOfLines={1}>{t.title}</Text>
+                        {t.next_action ? <Text style={styles.tlCardSub} numberOfLines={1}>→ {t.next_action}</Text> : null}
+                      </View>
+                      <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(t)}>
+                        <Text style={styles.statusChipText}>{statusGlyph(t.status)}</Text>
+                      </TouchableOpacity>
                     </TouchableOpacity>
-                  </TouchableOpacity>
-                </View>
-              ))}
+                  </View>
+                );
+              })}
             </View>
           </>
         )}
@@ -760,6 +817,56 @@ export default function TodayScreen() {
 
       <CompletedCalendar visible={calendarOpen} onClose={() => setCalendarOpen(false)} tasks={tasks} />
 
+      {/* PEPPER plan review */}
+      <Modal visible={planModal} animationType="slide" transparent onRequestClose={() => setPlanModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.planSheet}>
+            <Text style={styles.editorTitle}>PEPPER'S PLAN</Text>
+            <Text style={styles.sectionHint}>spread across your days. apply now, or tweak after.</Text>
+            <ScrollView style={{ maxHeight: 430 }}>
+              {Object.entries(
+                plan.reduce((acc: Record<string, any[]>, p: any) => {
+                  const d = p.scheduled_date || 'Someday';
+                  (acc[d] = acc[d] || []).push(p);
+                  return acc;
+                }, {})
+              ).map(([date, items]) => (
+                <View key={date} style={{ marginTop: Spacing.md }}>
+                  <Text style={styles.planDate}>{date === today ? 'TODAY' : date}</Text>
+                  {(items as any[]).map((p) => (
+                    <View key={p.task_id} style={styles.planItem}>
+                      <Text style={styles.planTime}>{p.time || '—'}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.planItemTitle} numberOfLines={1}>
+                          {p.kind === 'appointment' ? '📅 ' : ''}{p.title}{p.non_negotiable ? '  🔒' : ''}
+                        </Text>
+                        {p.reason ? <Text style={styles.planReason} numberOfLines={1}>{p.reason}</Text> : null}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ))}
+              {planClarify.length > 0 && (
+                <>
+                  <Text style={[styles.sectionLabel, { color: Colors.softSpiceLilac, marginTop: Spacing.lg }]}>PEPPER NEEDS TO KNOW</Text>
+                  {planClarify.map((c: any, i: number) => (
+                    <View key={i} style={styles.planClarify}>
+                      <Text style={styles.planClarifyQ}>{c.question}</Text>
+                      <Text style={styles.planClarifyT}>{c.title}</Text>
+                    </View>
+                  ))}
+                  <Text style={styles.sectionHint}>answer by editing that loop, then re-organize.</Text>
+                </>
+              )}
+            </ScrollView>
+            <View style={styles.editorActions}>
+              <Button title="CANCEL" variant="ghost" onPress={() => setPlanModal(false)} style={{ flex: 1 }} />
+              <Button title="APPLY PLAN" variant="primary" onPress={applyPlan} style={{ flex: 1 }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Task editor */}
       <Modal visible={taskModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
@@ -785,8 +892,21 @@ export default function TodayScreen() {
                 placeholder="Pick a deadline (optional)"
                 variant="red"
               />
+              <View style={styles.kindRow}>
+                {(['task', 'appointment'] as const).map((k) => (
+                  <TouchableOpacity
+                    key={k}
+                    style={[styles.kindBtn, taskForm.kind === k && styles.kindBtnOn]}
+                    onPress={() => setTaskForm({ ...taskForm, kind: k })}
+                  >
+                    <Ionicons name={k === 'appointment' ? 'calendar' : 'ellipse-outline'} size={14} color={taskForm.kind === k ? Colors.inkBlack : Colors.textSubtle} />
+                    <Text style={[styles.kindBtnText, taskForm.kind === k && { color: Colors.inkBlack }]}>{k === 'appointment' ? 'APPOINTMENT' : 'TASK'}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
               <Input
-                label="TIME (optional, HH:MM)"
+                label={taskForm.kind === 'appointment' ? 'TIME (HH:MM)' : 'TIME (optional, HH:MM)'}
                 value={taskForm.time}
                 onChangeText={(t) => setTaskForm({ ...taskForm, time: t })}
                 placeholder="14:30"
@@ -1153,4 +1273,31 @@ const styles = StyleSheet.create({
   nnToggleHint: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, marginTop: 1 },
   loopCardNN: { borderColor: Colors.brightRed, backgroundColor: 'rgba(255,0,54,0.06)' },
   loopTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+
+  organizeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.pickleLime, borderRadius: BorderRadius.full,
+    paddingVertical: Spacing.md, marginTop: Spacing.md,
+  },
+  organizeText: { color: Colors.inkBlack, fontSize: Typography.fontSize.sm, fontWeight: '900', letterSpacing: 1 },
+  kindRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Layout.componentGap },
+  kindBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: Spacing.sm, borderRadius: BorderRadius.full,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  kindBtnOn: { backgroundColor: Colors.softSpiceLilac, borderColor: Colors.softSpiceLilac },
+  kindBtnText: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
+  tlDotAppt: { backgroundColor: Colors.softSpiceLilac },
+  tlCardAppt: { borderColor: Colors.softSpiceLilac, backgroundColor: 'rgba(124,107,166,0.1)' },
+
+  planSheet: { marginTop: 'auto', backgroundColor: Colors.charcoal, borderTopLeftRadius: BorderRadius.xxl, borderTopRightRadius: BorderRadius.xxl, padding: Layout.cardPaddingLarge, maxHeight: '90%' },
+  planDate: { fontSize: Typography.fontSize.xs, color: Colors.pickleLime, fontWeight: '800', letterSpacing: 1, marginBottom: 6, borderBottomWidth: 1, borderBottomColor: Colors.border, paddingBottom: 4 },
+  planItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: 6 },
+  planTime: { width: 48, fontSize: Typography.fontSize.xs, color: Colors.softSpiceLilac, fontWeight: '800' },
+  planItemTitle: { fontSize: Typography.fontSize.base, color: Colors.text, fontWeight: '700' },
+  planReason: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, marginTop: 1 },
+  planClarify: { backgroundColor: 'rgba(124,107,166,0.12)', borderWidth: 1, borderColor: Colors.softSpiceLilac, borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.xs },
+  planClarifyQ: { fontSize: Typography.fontSize.sm, color: Colors.text, fontWeight: '700' },
+  planClarifyT: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontStyle: 'italic', marginTop: 2 },
 });
