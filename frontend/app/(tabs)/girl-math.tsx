@@ -380,8 +380,6 @@ export default function GirlMathScreen() {
     await upsertField({ soft_savings: ss });
   };
 
-  const saveDoom2 = async () => {};
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>

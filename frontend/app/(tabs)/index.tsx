@@ -41,12 +41,7 @@ function localDate(d: Date = new Date()): string {
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
-import {
-  priorityReaction,
-  loopDoneReaction,
-  loopOverdueNudge,
-  loopDueTodayNudge,
-} from '../../src/utils/pepperReactions';
+import { priorityReaction, loopDoneReaction } from '../../src/utils/pepperReactions';
 
 export default function TodayScreen() {
   const { currentUserId, nickname, notifications } = useAppStore();
@@ -147,7 +142,6 @@ export default function TodayScreen() {
     LayoutAnimation.configureNext(LayoutAnimation.create(220, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
     setExpandedLoops((prev) => ({ ...prev, [id]: !prev[id] }));
   };
-  const [overdueNudgeSeed] = useState(() => Math.floor(Math.random() * 100));
 
   const today = localDate();
   const todayDate = new Date();
@@ -427,7 +421,6 @@ export default function TodayScreen() {
   const overdueTasks = activeTasks.filter(
     (t) => (t.deadline && t.deadline < today) || (t.scheduled_date && t.scheduled_date < today)
   ).sort(byTime);
-  const dueTodayTasks = activeTasks.filter((t) => t.deadline === today).sort(byTime);
   const otherActiveTasks = activeTasks.filter(
     (t) => !t.deadline || t.deadline > today
   ).sort(byTime);
@@ -1138,78 +1131,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   statusChipText: { color: Colors.pickleLime, fontSize: 18, fontWeight: '900' },
-  // Top 3 checkable cards
-  priorityCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.charcoalRaised,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Layout.cardPadding,
-    borderRadius: BorderRadius.xl,
-    marginBottom: Spacing.sm,
-  },
-  priorityCardLime: {
-    backgroundColor: Colors.pickleLime,
-    borderColor: Colors.pickleLime,
-  },
-  priorityCardDone: {
-    backgroundColor: Colors.inkBlack,
-    borderColor: Colors.borderStrong,
-    opacity: 0.6,
-  },
-  priorityCheckbox: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    borderColor: Colors.inkBlack,
-    backgroundColor: 'rgba(13,13,13,0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: Spacing.md,
-  },
-  priorityCheckboxDone: {
-    backgroundColor: Colors.pickleLime,
-    borderColor: Colors.pickleLime,
-  },
-  priorityNum: { fontSize: Typography.fontSize.md, fontWeight: '900', color: Colors.text },
-  priorityText: {
-    flex: 1,
-    fontSize: Typography.fontSize.md,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-  priorityTextDone: {
-    textDecorationLine: 'line-through',
-    color: Colors.textSubtle,
-    fontWeight: '500',
-  },
-  // PEPPER nudges (overdue / due today)
-  nudgeWrap: { marginTop: Spacing.md, marginBottom: Spacing.sm },
-  nudgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.charcoalRaised,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.md,
-    borderRadius: BorderRadius.lg,
-    marginBottom: Spacing.xs,
-    gap: Spacing.sm,
-  },
-  nudgeTextWrap: { flex: 1 },
-  nudgeTitle: { color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
-  nudgeMeta: { color: Colors.brightRed, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
-  nudgeBtn: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 8,
-    borderRadius: BorderRadius.full,
-  },
-  nudgeBtnYes: { backgroundColor: Colors.pickleLime },
-  nudgeBtnYesText: { color: Colors.inkBlack, fontSize: Typography.fontSize.xs, fontWeight: '900', letterSpacing: 1 },
-  nudgeBtnNo: { backgroundColor: Colors.inkBlack, borderWidth: 1, borderColor: Colors.border },
-  nudgeBtnNoText: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
   editorScroll: { padding: Layout.screenPadding, paddingTop: 80 },
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
@@ -1224,9 +1145,6 @@ const styles = StyleSheet.create({
   calendarBtnText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '800', letterSpacing: 1 },
   nextWrap: { marginTop: Spacing.sm, gap: Spacing.sm },
   nextRow: { flexDirection: 'row', gap: Spacing.sm },
-  subtaskNest: { paddingLeft: Spacing.lg, marginTop: -4, marginBottom: Spacing.sm, gap: 4 },
-  subtaskNestRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
-  subtaskNestText: { fontSize: Typography.fontSize.sm, color: Colors.textSubtle },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
 
   // --- Redesign additions ---

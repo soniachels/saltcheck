@@ -73,13 +73,6 @@ class PyObjectId(ObjectId):
         field_schema.update(type="string")
 
 # Pydantic Models
-class UserCreate(BaseModel):
-    email: EmailStr
-    name: str
-    nickname: Optional[str] = None
-    pepper_spice_level: Literal["mild", "medium", "extra_spicy"] = "medium"
-    timezone: str = "UTC"
-
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -1012,9 +1005,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         
     except Exception as e:
         import traceback
-        print("=== PEPPER checkin failed ===", flush=True)
         traceback.print_exc()
-        print(f"=== checkin error: {type(e).__name__}: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"PEPPER is taking a break: {str(e)}")
 
 
