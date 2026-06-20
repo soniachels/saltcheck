@@ -464,9 +464,26 @@ export default function TodayScreen() {
       return !task.scheduled_date || task.scheduled_date === selectedDate;
     })
     .slice(0, 3);
-  const allTopDone =
-    visiblePriorities.length > 0 &&
-    visiblePriorities.every(({ i }) => !!prioritiesDone[i]);
+
+  // Unified Top 3: use PEPPER's curated list if she's sorted a dump for this day;
+  // otherwise AUTO-FILL from the day's scheduled tasks (non-negotiables first),
+  // so a fresh morning isn't blank.
+  const curatedTop3 = visiblePriorities.length > 0;
+  const dayTop3Tasks = tasks
+    .filter((t) => !t.parked && (t.scheduled_date ? t.scheduled_date === selectedDate : (t.time && selectedIsToday)))
+    .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b))
+    .slice(0, 3);
+  const topThree: { key: string; title: string; done: boolean; nonNeg?: boolean; onToggle: () => void }[] =
+    curatedTop3
+      ? visiblePriorities.map(({ p, i }) => ({ key: `p${i}`, title: p, done: !!prioritiesDone[i], onToggle: () => togglePriorityDone(i) }))
+      : dayTop3Tasks.map((t) => ({
+          key: t.id,
+          title: t.title,
+          done: t.status === 'done',
+          nonNeg: !!t.non_negotiable,
+          onToggle: () => (t.status === 'done' ? reopenLoop(t) : markLoopDone(t)),
+        }));
+  const allTopDone = topThree.length > 0 && topThree.every((x) => x.done);
 
   // How many loops were completed today (drives the burnout warning).
   const completedTodayCount = doneTasks.filter(
@@ -535,12 +552,12 @@ export default function TodayScreen() {
           <Text style={styles.verdictLabel}>PEPPER'S VERDICT</Text>
           <Text style={styles.verdictMain}>
             {todayEntry?.next_sane_step
-              || (priorities.length > 0 ? 'lock the top 3. ignore the rest.' : "dump to the flame. i'll cut it.")}
+              || (topThree.length > 0 ? 'lock the top 3. ignore the rest.' : "dump to the flame. i'll cut it.")}
           </Text>
           <View style={styles.verdictChips}>
-            {visiblePriorities.length > 0 && (
+            {topThree.length > 0 && (
               <View style={styles.verdictChip}>
-                <Text style={styles.verdictChipText}>{visiblePriorities.filter(({ i }) => prioritiesDone[i]).length}/{visiblePriorities.length} top 3</Text>
+                <Text style={styles.verdictChipText}>{topThree.filter((x) => x.done).length}/{topThree.length} top 3</Text>
               </View>
             )}
             {overdueTasks.length > 0 && (
@@ -591,29 +608,33 @@ export default function TodayScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Top 3 — now checkable */}
-        {visiblePriorities.length > 0 && (
+        {/* Top 3 — curated by PEPPER, or auto-filled from the day's schedule */}
+        {topThree.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>TOP 3.</Text>
-            <Text style={styles.sectionHint}>{selectedIsToday ? 'the only three that matter today. tap to close one.' : "this day's top three."}</Text>
-            {visiblePriorities.map(({ p, i }, pos) => {
-              const done = !!prioritiesDone[i];
-              const hero = pos === 0 && !done;
+            <Text style={styles.sectionHint}>
+              {curatedTop3
+                ? (selectedIsToday ? 'the only three that matter today. tap to close one.' : "this day's top three.")
+                : "auto-picked from what's scheduled. dump to let pepper re-cut."}
+            </Text>
+            {topThree.map((item, pos) => {
+              const hero = pos === 0 && !item.done;
               return (
                 <TouchableOpacity
-                  key={i}
-                  style={[styles.p3, hero && styles.p3Hero, done && styles.p3Done]}
-                  onPress={() => togglePriorityDone(i)}
+                  key={item.key}
+                  style={[styles.p3, hero && styles.p3Hero, item.done && styles.p3Done]}
+                  onPress={item.onToggle}
                   activeOpacity={0.85}
-                  testID={`priority-${i}`}
+                  testID={`priority-${pos}`}
                 >
-                  <View style={[styles.p3Num, hero && styles.p3NumHero, done && styles.p3NumDone]}>
-                    {done
+                  <View style={[styles.p3Num, hero && styles.p3NumHero, item.done && styles.p3NumDone]}>
+                    {item.done
                       ? <Ionicons name="checkmark" size={16} color={Colors.inkBlack} />
                       : <Text style={[styles.p3NumText, hero && { color: Colors.inkBlack }]}>{pos + 1}</Text>}
                   </View>
-                  <Text style={[styles.p3Text, hero && { color: Colors.inkBlack }, done && styles.p3TextDone]} numberOfLines={2}>
-                    {p}
+                  {item.nonNeg && !item.done && <Ionicons name="lock-closed" size={12} color={hero ? Colors.inkBlack : Colors.brightRed} />}
+                  <Text style={[styles.p3Text, hero && { color: Colors.inkBlack }, item.done && styles.p3TextDone]} numberOfLines={2}>
+                    {item.title}
                   </Text>
                 </TouchableOpacity>
               );
@@ -623,10 +644,10 @@ export default function TodayScreen() {
                 <PepperBubble label="* PEPPER" variant="lime">
                   {completedTodayCount >= BURNOUT_THRESHOLD
                     ? `that's ${completedTodayCount} done today. legend — but you're flirting with burnout. i'd call it.`
-                    : `top 3 done. next 3, or are we done for the day?`}
+                    : `top 3 done. ${curatedTop3 ? 'next 3, or are we done for the day?' : 'done for the day?'}`}
                 </PepperBubble>
                 <View style={styles.nextRow}>
-                  <Button title="NEXT 3" onPress={loadNext3} variant="secondary" style={{ flex: 1 }} />
+                  {curatedTop3 && <Button title="NEXT 3" onPress={loadNext3} variant="secondary" style={{ flex: 1 }} />}
                   <Button title="DONE FOR TODAY" onPress={() => setDayDone(true)} variant="primary" style={{ flex: 1 }} />
                 </View>
               </View>

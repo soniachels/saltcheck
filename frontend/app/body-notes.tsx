@@ -62,8 +62,20 @@ function lastTakenLabel(med: any): string {
   return days === 1 ? 'yesterday' : `${days}d ago`;
 }
 
-// "next due" based on frequency + whether it's been taken today.
+// "next due" — precise countdown for interval meds, else day-level.
 function nextDueLabel(med: any, takenToday: boolean): string {
+  if (med.interval_hours && med.interval_hours > 0) {
+    const hist = (med.intake_history || []).slice()
+      .sort((a: any, b: any) => String(b.taken_at || b.date).localeCompare(String(a.taken_at || a.date)));
+    if (!hist.length) return 'due now';
+    const last = new Date(hist[0].taken_at || hist[0].date);
+    if (isNaN(last.getTime())) return 'due now';
+    const diffMin = Math.round((last.getTime() + med.interval_hours * 3600000 - Date.now()) / 60000);
+    if (diffMin <= 0) return 'due now';
+    if (diffMin < 60) return `next in ${diffMin}m`;
+    const h = Math.floor(diffMin / 60), mm = diffMin % 60;
+    return `next in ${h}h${mm ? ` ${mm}m` : ''}`;
+  }
   if (med.frequency === 'as_needed') return 'as needed';
   const when = med.time_of_day ? ` ${med.time_of_day}` : '';
   if (med.frequency === 'weekly') return takenToday ? 'next: next week' : `due this week${when}`;
@@ -89,6 +101,7 @@ export default function BodyScreen() {
     name: '',
     dosage: '',
     frequency: 'daily' as 'daily' | 'weekly' | 'monthly' | 'as_needed',
+    interval_hours: '',
     time_of_day: '',
     notes: '',
   });
@@ -248,12 +261,13 @@ export default function BodyScreen() {
         name: med.name || '',
         dosage: med.dosage || '',
         frequency: med.frequency || 'daily',
+        interval_hours: med.interval_hours ? String(med.interval_hours) : '',
         time_of_day: med.time_of_day || '',
         notes: med.notes || '',
       });
       setMedEditor({ open: true, editingId: med.id });
     } else {
-      setMedForm({ name: '', dosage: '', frequency: 'daily', time_of_day: '', notes: '' });
+      setMedForm({ name: '', dosage: '', frequency: 'daily', interval_hours: '', time_of_day: '', notes: '' });
       setMedEditor({ open: true, editingId: null });
     }
   };
@@ -264,6 +278,7 @@ export default function BodyScreen() {
       name: medForm.name.trim(),
       dosage: medForm.dosage.trim() || undefined,
       frequency: medForm.frequency,
+      interval_hours: medForm.interval_hours ? parseInt(medForm.interval_hours, 10) : undefined,
       time_of_day: medForm.time_of_day || undefined,
       notes: medForm.notes.trim() || undefined,
       active: true,
@@ -275,7 +290,7 @@ export default function BodyScreen() {
         await apiClient.post(`/medications?user_id=${currentUserId}`, payload);
       }
       setMedEditor({ open: false, editingId: null });
-      setMedForm({ name: '', dosage: '', frequency: 'daily', time_of_day: '', notes: '' });
+      setMedForm({ name: '', dosage: '', frequency: 'daily', interval_hours: '', time_of_day: '', notes: '' });
       loadMeds();
     } catch (e) {
       console.error('saveMed err', e);
@@ -675,6 +690,14 @@ export default function BodyScreen() {
                 onChange={(v) => setMedForm({ ...medForm, time_of_day: v === 'anytime' ? '' : v })}
                 variant="lilac"
                 testIDPrefix="med-time"
+              />
+              <Input
+                label="EVERY (HOURS) — for multi-dose, optional"
+                value={medForm.interval_hours}
+                onChangeText={(t) => setMedForm({ ...medForm, interval_hours: t.replace(/[^0-9]/g, '') })}
+                keyboardType="number-pad"
+                placeholder="e.g. 8 = every 8 hours"
+                maxLength={2}
               />
               <Input
                 label="NOTES"

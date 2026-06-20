@@ -1888,6 +1888,7 @@ class MedicationCreate(BaseModel):
     name: str
     dosage: Optional[str] = None  # "10mg", "2 pills", etc
     frequency: Literal["daily", "weekly", "monthly", "as_needed"] = "daily"
+    interval_hours: Optional[int] = None  # if set, dose every N hours (multi-dose/day)
     time_of_day: Optional[str] = None  # "morning" / "evening" / "8:00 PM"
     days_of_week: Optional[List[str]] = None  # for weekly
     day_of_month: Optional[int] = None  # for monthly (1-31)
@@ -1902,6 +1903,7 @@ class MedicationResponse(BaseModel):
     name: str
     dosage: Optional[str] = None
     frequency: str
+    interval_hours: Optional[int] = None
     time_of_day: Optional[str] = None
     days_of_week: Optional[List[str]] = None
     day_of_month: Optional[int] = None
