@@ -170,6 +170,7 @@ class TaskCreate(BaseModel):
     time: Optional[str] = None  # "HH:MM" 24h — for time-aware day ordering
     subtasks: Optional[List[dict]] = None  # [{title: str, done: bool}]
     completed_at: Optional[datetime] = None  # set when status -> done (for the calendar)
+    non_negotiable: Optional[bool] = False  # must-do today; protected from parking/bumping
 
 class TaskResponse(BaseModel):
     id: str
@@ -184,6 +185,7 @@ class TaskResponse(BaseModel):
     time: Optional[str] = None
     subtasks: Optional[List[dict]] = None
     completed_at: Optional[datetime] = None
+    non_negotiable: Optional[bool] = False
     created_at: datetime
     updated_at: datetime
 
@@ -343,7 +345,7 @@ Format your response as JSON with these keys:
   "quick_read": "One line emotional read",
   "salt_check": ["Move 1", "Move 2", "Move 3"],
   "loops_to_create": [
-    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "linked_priority_index": 0}
+    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "non_negotiable": false, "linked_priority_index": 0}
   ],
   "parked": ["Item 1", "Item 2"],
   "money_check": "One money-related insight or null",
@@ -370,6 +372,11 @@ REPEATS:
 
 WORK PRECEDENCE:
 - If two or more WORK tasks compete for the same top slot and you can't tell which wins, add a clarity_question like "which is more urgent — X or Y?".
+
+NON-NEGOTIABLES:
+- Existing loops may be marked `non_negotiable: true` — these are must-do today. NEVER park them or drop them out of the top 3; keep them in salt_check if at all relevant today.
+- In loops_to_create, set `"non_negotiable": true` ONLY when the user clearly says a thing is a must / non-negotiable / can't skip / has to happen today. Otherwise false.
+- When new dumped tasks would push a non-negotiable out of the top 3, ASK precedence (clarity_question) instead of silently bumping it.
 
 SUBTASKS:
 - If a loop has multiple steps, list them in `subtasks` (array of short strings). NEVER cram multiple steps into one title, and NEVER pile several actions into a single salt_check item.
@@ -633,6 +640,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "next_action": t.get("next_action"),
                     "deadline": t.get("deadline"),
                     "time": t.get("time"),
+                    "non_negotiable": bool(t.get("non_negotiable")),
                 })
             today_doc = await daily_entries_collection.find_one(
                 {"user_id": user_id, "date": datetime.utcnow().strftime("%Y-%m-%d")}
@@ -735,6 +743,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "deadline": loop_spec.get("deadline") or None,
                     "time": loop_spec.get("time") or None,
                     "subtasks": subtasks,
+                    "non_negotiable": bool(loop_spec.get("non_negotiable")),
                     "status": "not_started",
                     "parked": False,
                     "created_at": datetime.utcnow(),

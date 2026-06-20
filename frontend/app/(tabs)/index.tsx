@@ -46,7 +46,7 @@ export default function TodayScreen() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
-  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[] }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [] });
+  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false });
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
@@ -159,10 +159,10 @@ export default function TodayScreen() {
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
-      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [] });
+      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable });
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [] });
+      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false });
     }
     setSubtaskDraft('');
     setTaskModal(true);
@@ -179,6 +179,7 @@ export default function TodayScreen() {
       deadline: taskForm.deadline,
       time: taskForm.time.trim() || null,
       subtasks: taskForm.subtasks,
+      non_negotiable: taskForm.non_negotiable,
       status: editingTask?.status || 'not_started',
       parked: editingTask?.parked || false,
     };
@@ -378,7 +379,10 @@ export default function TodayScreen() {
 
   // Day timeline = tasks with a time; everything else is an open loop.
   const timedTasks = activeTasks.filter((t) => t.time).sort(byTime);
-  const untimedTasks = activeTasks.filter((t) => !t.time).sort(byTime);
+  // Untimed loops: non-negotiables float to the top, then by time-of-day.
+  const untimedTasks = activeTasks
+    .filter((t) => !t.time)
+    .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b));
   const selectedIsToday = selectedDate === today;
 
   // Toggle a subtask's done flag and persist.
@@ -670,7 +674,7 @@ export default function TodayScreen() {
             const expanded = !!expandedLoops[task.id];
             const nextStep = subs.find((s) => !s.done)?.title;
             return (
-              <View key={task.id} style={styles.loopCard}>
+              <View key={task.id} style={[styles.loopCard, task.non_negotiable && styles.loopCardNN]}>
                 <View style={styles.loopHeaderRow}>
                   <TouchableOpacity
                     style={styles.loopMain}
@@ -683,7 +687,10 @@ export default function TodayScreen() {
                         : <View style={styles.ringEmptyDot} />}
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.loopTitle} numberOfLines={1}>{task.title}</Text>
+                      <View style={styles.loopTitleRow}>
+                        {task.non_negotiable && <Ionicons name="lock-closed" size={12} color={Colors.brightRed} />}
+                        <Text style={styles.loopTitle} numberOfLines={1}>{task.title}</Text>
+                      </View>
                       <Text style={styles.loopPreview} numberOfLines={1}>
                         {subs.length > 0
                           ? (nextStep ? `next: ${nextStep}` : 'all steps done — close it')
@@ -786,6 +793,26 @@ export default function TodayScreen() {
                 keyboardType="numbers-and-punctuation"
                 maxLength={5}
               />
+
+              <TouchableOpacity
+                style={[styles.nnToggle, taskForm.non_negotiable && styles.nnToggleOn]}
+                onPress={() => setTaskForm({ ...taskForm, non_negotiable: !taskForm.non_negotiable })}
+              >
+                <Ionicons
+                  name={taskForm.non_negotiable ? 'lock-closed' : 'lock-open-outline'}
+                  size={18}
+                  color={taskForm.non_negotiable ? Colors.inkBlack : Colors.brightRed}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.nnToggleLabel, taskForm.non_negotiable && { color: Colors.inkBlack }]}>NON-NEGOTIABLE</Text>
+                  <Text style={[styles.nnToggleHint, taskForm.non_negotiable && { color: Colors.inkBlack }]}>must-do today — PEPPER won't bump or park it</Text>
+                </View>
+                <Ionicons
+                  name={taskForm.non_negotiable ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={22}
+                  color={taskForm.non_negotiable ? Colors.inkBlack : Colors.steelBlueGrey}
+                />
+              </TouchableOpacity>
 
               {/* Subtasks */}
               <Text style={styles.subtaskHeader}>SUBTASKS</Text>
@@ -1089,7 +1116,7 @@ const styles = StyleSheet.create({
   ringDone: { backgroundColor: Colors.pickleLime, borderColor: Colors.pickleLime },
   ringText: { fontSize: 10, fontWeight: '800', color: Colors.text },
   ringEmptyDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.steelBlueGrey },
-  loopTitle: { color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
+  loopTitle: { flexShrink: 1, color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
   loopPreview: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, marginTop: 1 },
   loopSteps: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, paddingLeft: 58, gap: 6 },
   loopStepRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -1113,4 +1140,17 @@ const styles = StyleSheet.create({
   dedupeItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
   dedupeItemText: { flex: 1, fontSize: Typography.fontSize.sm, color: Colors.textSubtle },
   dedupeActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+
+  nnToggle: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: BorderRadius.lg, padding: Spacing.md,
+    borderWidth: 1, borderColor: Colors.brightRed,
+    marginBottom: Layout.componentGap,
+  },
+  nnToggleOn: { backgroundColor: Colors.brightRed, borderColor: Colors.brightRed },
+  nnToggleLabel: { fontSize: Typography.fontSize.sm, color: Colors.text, fontWeight: '800', letterSpacing: 1 },
+  nnToggleHint: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, marginTop: 1 },
+  loopCardNN: { borderColor: Colors.brightRed, backgroundColor: 'rgba(255,0,54,0.06)' },
+  loopTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
 });
