@@ -754,6 +754,8 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 contradictions = []
             for rt in repeat_loops:
                 contradictions.append({
+                    "kind": "repeat",
+                    "title": rt,
                     "existing": rt,
                     "new": rt,
                     "question": f"You already have '{rt}' open — same loop, or a new one?",

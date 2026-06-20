@@ -47,7 +47,19 @@ export const PepperFab: React.FC = () => {
   const [rawDump, setRawDump] = useState('');
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<any>(null);
+  const [resolved, setResolved] = useState<Set<number>>(() => new Set());
   const { currentUserId, pepperSpiceLevel, nickname } = useAppStore();
+
+  const resolveContradiction = (i: number) =>
+    setResolved((prev) => { const n = new Set(prev); n.add(i); return n; });
+
+  // "It's new" — force-create the loop PEPPER refused to duplicate.
+  const addAsNew = async (c: any, i: number) => {
+    try {
+      await apiClient.post('/tasks', { title: c.title || c.new, status: 'not_started', parked: false }, { params: { user_id: currentUserId } });
+    } catch (e) { console.error(e); }
+    resolveContradiction(i);
+  };
   const voice = useVoiceRecorder();
 
   // Animated values
@@ -93,6 +105,7 @@ export const PepperFab: React.FC = () => {
     }).start(() => {
       setMounted(false);
       setResponse(null);
+      setResolved(new Set());
       setRawDump('');
     });
   };
@@ -108,6 +121,7 @@ export const PepperFab: React.FC = () => {
         nickname: nickname || undefined,
       }, { params: { user_id: currentUserId } });
       setResponse(r.data);
+      setResolved(new Set());
       setRawDump('');
     } catch (e) {
       console.error(e);
@@ -277,18 +291,32 @@ export const PepperFab: React.FC = () => {
                         {response.ai_response.quick_read}
                       </PepperBubble>
 
-                      {Array.isArray(response.ai_response.contradictions) && response.ai_response.contradictions.length > 0 && (
+                      {Array.isArray(response.ai_response.contradictions) &&
+                        response.ai_response.contradictions.some((_: any, i: number) => !resolved.has(i)) && (
                         <>
                           <Text style={styles.sectionLabel}>HOLD ON — THIS CLASHES.</Text>
-                          {response.ai_response.contradictions.map((c: any, i: number) => (
-                            <CategoryCard
-                              key={i}
-                              title={c.question || 'Same or new?'}
-                              subtitle={`already on your list: ${c.existing || '—'}`}
-                              icon="git-compare"
-                              variant="red"
-                            />
-                          ))}
+                          {response.ai_response.contradictions.map((c: any, i: number) =>
+                            resolved.has(i) ? null : (
+                              <View key={i} style={{ marginBottom: Spacing.sm }}>
+                                <CategoryCard
+                                  title={c.question || 'Same or new?'}
+                                  subtitle={`already on your list: ${c.existing || '—'}`}
+                                  icon="git-compare"
+                                  variant="red"
+                                />
+                                <View style={styles.resolveRow}>
+                                  {c.kind === 'repeat' ? (
+                                    <>
+                                      <Button title="IT'S THE SAME" variant="ghost" onPress={() => resolveContradiction(i)} style={{ flex: 1 }} />
+                                      <Button title="ADD AS NEW" variant="primary" onPress={() => addAsNew(c, i)} style={{ flex: 1 }} />
+                                    </>
+                                  ) : (
+                                    <Button title="GOT IT" variant="ghost" onPress={() => resolveContradiction(i)} style={{ flex: 1 }} />
+                                  )}
+                                </View>
+                              </View>
+                            )
+                          )}
                         </>
                       )}
 
@@ -444,6 +472,7 @@ const styles = StyleSheet.create({
     fontWeight: '800', letterSpacing: 2,
     marginTop: Spacing.lg, marginBottom: Spacing.sm,
   },
+  resolveRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.xs },
   move: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.05)',
