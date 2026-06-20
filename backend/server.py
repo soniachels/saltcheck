@@ -4,6 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Literal
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from bson import ObjectId
 import os
 import tempfile
@@ -494,6 +495,22 @@ def detect_crisis(text: str) -> bool:
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in CRISIS_KEYWORDS)
 
+
+def user_today(user: dict) -> str:
+    """Today's date (YYYY-MM-DD) in the user's own timezone, not UTC."""
+    tz = (user or {}).get("timezone") or "UTC"
+    try:
+        return datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def clamp_future(d, floor: str):
+    """Never let a scheduled date land before `floor` (today)."""
+    if isinstance(d, str) and d and d < floor:
+        return floor
+    return d
+
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
@@ -661,10 +678,13 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "scheduled_date": t.get("scheduled_date"),
                 })
             today_doc = await daily_entries_collection.find_one(
-                {"user_id": user_id, "date": datetime.utcnow().strftime("%Y-%m-%d")}
+                {"user_id": user_id, "date": user_today(current)}
             )
             existing_priorities = (today_doc or {}).get("top_priorities", []) or []
-            _now = datetime.utcnow()
+            try:
+                _now = datetime.now(ZoneInfo(current.get("timezone") or "UTC"))
+            except Exception:
+                _now = datetime.utcnow()
             context_block = (
                 f"\n\nTODAY IS {_now.strftime('%Y-%m-%d')} ({_now.strftime('%A')}). "
                 f"Resolve any relative timing the user gives (today, tomorrow, Monday, this week) into YYYY-MM-DD dates."
@@ -716,7 +736,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         checkin_doc["id"] = str(result.inserted_id)
         
         # Auto-sync to today's daily entry so the Today screen reflects PEPPER's plan
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        today_str = user_today(current)
         needs_clarity = bool(ai_response.get("needs_clarity"))
         salt_check_items = ai_response.get("salt_check", []) if not needs_clarity else []
         loops_to_create = ai_response.get("loops_to_create", []) if not needs_clarity else []
@@ -781,7 +801,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "next_action": loop_spec.get("next_action") or None,
                     "deadline": loop_spec.get("deadline") or None,
                     "time": loop_spec.get("time") or None,
-                    "scheduled_date": loop_spec.get("scheduled_date") or None,
+                    "scheduled_date": clamp_future(loop_spec.get("scheduled_date") or None, today_str),
                     "kind": "task",
                     "subtasks": subtasks,
                     "non_negotiable": bool(loop_spec.get("non_negotiable")),
@@ -831,7 +851,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     continue
                 set_fields = {}
                 if su.get("scheduled_date"):
-                    set_fields["scheduled_date"] = str(su["scheduled_date"])
+                    set_fields["scheduled_date"] = clamp_future(str(su["scheduled_date"]), today_str)
                 if su.get("time") and su.get("time") not in ("null", ""):
                     set_fields["time"] = str(su["time"])
                 if not set_fields:
@@ -1123,7 +1143,7 @@ async def organize_loops(body: OrganizeRequest, current: dict = Depends(get_curr
             plan.append({
                 "task_id": tid,
                 "title": by_id[tid]["title"],
-                "scheduled_date": p.get("scheduled_date"),
+                "scheduled_date": clamp_future(p.get("scheduled_date"), body.start_date),
                 "time": (p.get("time") if p.get("time") not in ("null", "") else None),
                 "rank": p.get("rank"),
                 "reason": p.get("reason") or "",

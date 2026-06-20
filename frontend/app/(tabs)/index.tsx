@@ -30,6 +30,14 @@ import { scheduleReengagement } from '../../src/utils/pepperNudges';
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+
+// Local-time YYYY-MM-DD (NOT UTC) — so "today" matches the user's actual day.
+function localDate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
@@ -51,7 +59,7 @@ export default function TodayScreen() {
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(() => localDate());
   const [expandedLoops, setExpandedLoops] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [dedupeGroups, setDedupeGroups] = useState<any[]>([]);
@@ -141,7 +149,7 @@ export default function TodayScreen() {
   };
   const [overdueNudgeSeed] = useState(() => Math.floor(Math.random() * 100));
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDate();
   const todayDate = new Date();
   const dayName = todayDate.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
   const monthDay = todayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -317,6 +325,14 @@ export default function TodayScreen() {
     loadAll();
   };
 
+  // Rescue a past-due / past-scheduled loop by moving it to today.
+  const moveToToday = async (task: any) => {
+    const payload = { ...task, scheduled_date: today };
+    delete payload.id; delete payload.user_id; delete payload.created_at; delete payload.updated_at;
+    await apiClient.put(`/tasks/${task.id}`, payload);
+    loadAll();
+  };
+
   const reopenLoop = async (task: any) => {
     const payload = { ...task, status: 'in_progress' };
     delete payload.id;
@@ -406,9 +422,10 @@ export default function TodayScreen() {
   const doneTasks = tasks.filter((t) => t.status === 'done');
   const parkedTasks = tasks.filter((t) => t.parked);
 
-  // Deadline-aware bucketing (each bucket ordered by time-of-day)
+  // Overdue = past deadline OR scheduled for a day that's already gone (so
+  // past-scheduled loops resurface instead of vanishing into a dead day).
   const overdueTasks = activeTasks.filter(
-    (t) => t.deadline && t.deadline < today
+    (t) => (t.deadline && t.deadline < today) || (t.scheduled_date && t.scheduled_date < today)
   ).sort(byTime);
   const dueTodayTasks = activeTasks.filter((t) => t.deadline === today).sort(byTime);
   const otherActiveTasks = activeTasks.filter(
@@ -549,18 +566,20 @@ export default function TodayScreen() {
         {/* Overdue quick-actions */}
         {overdueTasks.length > 0 && (
           <View style={styles.actionList}>
-            {overdueTasks.slice(0, 3).map((t) => (
+            {overdueTasks.slice(0, 4).map((t) => (
               <View key={t.id} style={styles.actionRow}>
                 <View style={styles.actionDotRed} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.actionTitle} numberOfLines={1}>{t.title}</Text>
-                  <Text style={styles.actionMetaRed}>overdue · {t.deadline}</Text>
+                  <Text style={styles.actionMetaRed}>
+                    {t.deadline && t.deadline < today ? `overdue · due ${t.deadline}` : `missed · planned ${t.scheduled_date}`}
+                  </Text>
                 </View>
                 <TouchableOpacity style={styles.didItBtn} onPress={() => markLoopDone(t)}>
                   <Text style={styles.didItText}>DID IT</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.nahBtn} onPress={() => reopenLoop(t)}>
-                  <Text style={styles.nahText}>NAH</Text>
+                <TouchableOpacity style={styles.nahBtn} onPress={() => moveToToday(t)}>
+                  <Text style={styles.nahText}>→ TODAY</Text>
                 </TouchableOpacity>
               </View>
             ))}
