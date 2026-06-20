@@ -440,9 +440,23 @@ export default function TodayScreen() {
   // Priority completion state
   const priorities: string[] = todayEntry?.top_priorities || [];
   const prioritiesDone: boolean[] = todayEntry?.priorities_done || [];
+  const prioritiesTaskIds: (string | null)[] = todayEntry?.priorities_task_ids || [];
+  // Only show Top-3 items whose linked task is unscheduled or scheduled for the
+  // day being viewed — keep later-day work off today's Top 3. Keep original
+  // indices so done/toggle stay correct.
+  const visiblePriorities = priorities
+    .map((p, i) => ({ p, i }))
+    .filter(({ i }) => {
+      const tid = prioritiesTaskIds[i];
+      if (!tid) return true;
+      const task = tasks.find((t) => t.id === tid);
+      if (!task) return true;
+      return !task.scheduled_date || task.scheduled_date === selectedDate;
+    })
+    .slice(0, 3);
   const allTopDone =
-    priorities.length > 0 &&
-    priorities.every((_, i) => !!prioritiesDone[i]);
+    visiblePriorities.length > 0 &&
+    visiblePriorities.every(({ i }) => !!prioritiesDone[i]);
 
   // How many loops were completed today (drives the burnout warning).
   const completedTodayCount = doneTasks.filter(
@@ -514,9 +528,9 @@ export default function TodayScreen() {
               || (priorities.length > 0 ? 'lock the top 3. ignore the rest.' : "dump to the flame. i'll cut it.")}
           </Text>
           <View style={styles.verdictChips}>
-            {priorities.length > 0 && (
+            {visiblePriorities.length > 0 && (
               <View style={styles.verdictChip}>
-                <Text style={styles.verdictChipText}>{prioritiesDone.filter(Boolean).length}/{Math.min(priorities.length, 3)} top 3</Text>
+                <Text style={styles.verdictChipText}>{visiblePriorities.filter(({ i }) => prioritiesDone[i]).length}/{visiblePriorities.length} top 3</Text>
               </View>
             )}
             {overdueTasks.length > 0 && (
@@ -566,13 +580,13 @@ export default function TodayScreen() {
         )}
 
         {/* Top 3 — now checkable */}
-        {priorities.length > 0 && (
+        {visiblePriorities.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>TOP 3.</Text>
-            <Text style={styles.sectionHint}>the only three that matter. tap to close one.</Text>
-            {priorities.slice(0, 3).map((p: string, i: number) => {
+            <Text style={styles.sectionHint}>{selectedIsToday ? 'the only three that matter today. tap to close one.' : "this day's top three."}</Text>
+            {visiblePriorities.map(({ p, i }, pos) => {
               const done = !!prioritiesDone[i];
-              const hero = i === 0 && !done;
+              const hero = pos === 0 && !done;
               return (
                 <TouchableOpacity
                   key={i}
@@ -584,7 +598,7 @@ export default function TodayScreen() {
                   <View style={[styles.p3Num, hero && styles.p3NumHero, done && styles.p3NumDone]}>
                     {done
                       ? <Ionicons name="checkmark" size={16} color={Colors.inkBlack} />
-                      : <Text style={[styles.p3NumText, hero && { color: Colors.inkBlack }]}>{i + 1}</Text>}
+                      : <Text style={[styles.p3NumText, hero && { color: Colors.inkBlack }]}>{pos + 1}</Text>}
                   </View>
                   <Text style={[styles.p3Text, hero && { color: Colors.inkBlack }, done && styles.p3TextDone]} numberOfLines={2}>
                     {p}
