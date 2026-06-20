@@ -915,7 +915,69 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         return AICheckInResponse(**checkin_doc)
         
     except Exception as e:
+        import traceback
+        print("=== PEPPER checkin failed ===", flush=True)
+        traceback.print_exc()
+        print(f"=== checkin error: {type(e).__name__}: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"PEPPER is taking a break: {str(e)}")
+
+
+DEDUPE_PROMPT = """You are PEPPER. You're given the user's current OPEN LOOPS as a JSON list of {id, title}.
+Find groups that are the SAME task or clear duplicates/overlaps — even if worded differently (e.g. "Create graphic for Eric and Bada" and "Draft Eric & Bada poster" are the same).
+Be conservative: only group GENUINE duplicates, not merely related or sequential tasks.
+For each duplicate group, pick the clearest title to keep.
+Return JSON ONLY: {"groups": [{"task_ids": ["id1","id2"], "keep_id": "id1", "reason": "short why they're the same"}]}.
+If there are no duplicates, return {"groups": []}."""
+
+
+@app.post("/api/pepper/dedupe-loops")
+async def dedupe_loops(current: dict = Depends(get_current_user)):
+    """PEPPER scans the user's open loops and flags likely duplicates to merge."""
+    user_id = current["id"]
+    import json as _json
+    loops = []
+    async for t in tasks_collection.find(
+        {"user_id": user_id, "status": {"$ne": "done"}, "parked": {"$ne": True}}
+    ):
+        loops.append({"id": str(t["_id"]), "title": t.get("title") or ""})
+
+    if len(loops) < 2:
+        return {"groups": []}
+
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"dedupe_{user_id}_{datetime.utcnow().timestamp()}",
+            system_message=DEDUPE_PROMPT,
+        ).with_model("openai", "gpt-4.1")
+        resp = await chat.send_message(UserMessage(text=f"OPEN LOOPS: {_json.dumps(loops)}\n\nReturn the JSON."))
+        try:
+            data = _json.loads(resp)
+        except Exception:
+            # tolerate code fences / stray text
+            s = resp[resp.find("{"): resp.rfind("}") + 1]
+            data = _json.loads(s)
+        groups = data.get("groups", []) if isinstance(data, dict) else []
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"PEPPER couldn't tidy: {str(e)}")
+
+    # Validate against real ids and attach titles for display.
+    by_id = {l["id"]: l["title"] for l in loops}
+    clean = []
+    for g in groups:
+        ids = [i for i in (g.get("task_ids") or []) if i in by_id]
+        if len(ids) < 2:
+            continue
+        keep = g.get("keep_id") if g.get("keep_id") in ids else ids[0]
+        clean.append({
+            "task_ids": ids,
+            "keep_id": keep,
+            "reason": g.get("reason") or "These look like the same loop.",
+            "items": [{"id": i, "title": by_id[i]} for i in ids],
+        })
+    return {"groups": clean}
 
 @app.get("/api/pepper/history/{user_id}", response_model=List[AICheckInResponse])
 async def get_pepper_history(user_id: str, limit: int = 10, current: dict = Depends(get_current_user)):

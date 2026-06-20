@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Modal,
   Alert,
+  ActivityIndicator,
   LayoutAnimation,
   Platform,
   UIManager,
@@ -53,12 +54,50 @@ export default function TodayScreen() {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [expandedLoops, setExpandedLoops] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [dedupeGroups, setDedupeGroups] = useState<any[]>([]);
+  const [dedupeLoading, setDedupeLoading] = useState(false);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await loadAll();
     setRefreshing(false);
   };
+
+  // Ask PEPPER to scan open loops for duplicates worth merging.
+  const checkRepeats = async () => {
+    setDedupeLoading(true);
+    try {
+      const r = await apiClient.post('/pepper/dedupe-loops', {}, { params: { user_id: currentUserId } });
+      const groups = r.data?.groups || [];
+      setDedupeGroups(groups);
+      if (!groups.length) Alert.alert('All clear', "PEPPER doesn't see any repeats. Tidy queen.");
+    } catch (e) {
+      Alert.alert('Hmm', "PEPPER couldn't check right now.");
+    } finally {
+      setDedupeLoading(false);
+    }
+  };
+
+  const mergeGroup = (group: any) => {
+    const drop = (group.task_ids || []).filter((id: string) => id !== group.keep_id);
+    const keepTitle = (group.items || []).find((it: any) => it.id === group.keep_id)?.title || 'one';
+    Alert.alert(
+      'Merge repeats?',
+      `Keep "${keepTitle}" and delete the ${drop.length} duplicate${drop.length === 1 ? '' : 's'}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Merge', style: 'destructive', onPress: async () => {
+            try { await Promise.all(drop.map((id: string) => apiClient.delete(`/tasks/${id}`))); } catch {}
+            setDedupeGroups((prev) => prev.filter((g) => g !== group));
+            loadAll();
+          },
+        },
+      ]
+    );
+  };
+
+  const dismissGroup = (group: any) => setDedupeGroups((prev) => prev.filter((g) => g !== group));
 
   const toggleExpand = (id: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.create(220, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
@@ -575,13 +614,47 @@ export default function TodayScreen() {
         {/* Open Loops (merged) */}
         <View style={styles.loopsHeader}>
           <Text style={styles.sectionLabel}>OPEN LOOPS.</Text>
-          <TouchableOpacity onPress={() => openTaskEditor()} testID="add-loop-btn">
-            <View style={styles.addLoopBtn}>
-              <Ionicons name="add" size={18} color={Colors.saltBone} />
-              <Text style={styles.addLoopText}>NEW LOOP</Text>
-            </View>
-          </TouchableOpacity>
+          <View style={styles.loopsHeaderBtns}>
+            <TouchableOpacity onPress={checkRepeats} disabled={dedupeLoading} testID="check-repeats-btn">
+              <View style={styles.checkRepeatsBtn}>
+                {dedupeLoading
+                  ? <ActivityIndicator size="small" color={Colors.softSpiceLilac} />
+                  : <Ionicons name="git-compare" size={16} color={Colors.softSpiceLilac} />}
+                <Text style={styles.checkRepeatsText}>REPEATS?</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => openTaskEditor()} testID="add-loop-btn">
+              <View style={styles.addLoopBtn}>
+                <Ionicons name="add" size={18} color={Colors.saltBone} />
+                <Text style={styles.addLoopText}>NEW LOOP</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {/* PEPPER-flagged duplicates */}
+        {dedupeGroups.map((g, gi) => (
+          <View key={gi} style={styles.dedupeCard}>
+            <Text style={styles.dedupeLabel}>* PEPPER: POSSIBLE REPEAT</Text>
+            <Text style={styles.dedupeReason}>{g.reason}</Text>
+            {(g.items || []).map((it: any) => (
+              <View key={it.id} style={styles.dedupeItem}>
+                <Ionicons
+                  name={it.id === g.keep_id ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={14}
+                  color={it.id === g.keep_id ? Colors.pickleLime : Colors.steelBlueGrey}
+                />
+                <Text style={[styles.dedupeItemText, it.id === g.keep_id && { color: Colors.text, fontWeight: '700' }]}>
+                  {it.title}{it.id === g.keep_id ? '  · keep' : ''}
+                </Text>
+              </View>
+            ))}
+            <View style={styles.dedupeActions}>
+              <Button title="KEEP BOTH" variant="ghost" onPress={() => dismissGroup(g)} style={{ flex: 1 }} />
+              <Button title="MERGE" variant="primary" onPress={() => mergeGroup(g)} style={{ flex: 1 }} />
+            </View>
+          </View>
+        ))}
 
         {untimedTasks.length === 0 ? (
           <View style={styles.emptyLoops}>
@@ -1022,4 +1095,22 @@ const styles = StyleSheet.create({
   loopStepRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   loopStepText: { fontSize: Typography.fontSize.sm, color: Colors.text },
   loopEdit: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 1, marginTop: 4 },
+
+  loopsHeaderBtns: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+  checkRepeatsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: Spacing.md, paddingVertical: 6,
+    borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.softSpiceLilac,
+  },
+  checkRepeatsText: { color: Colors.softSpiceLilac, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
+  dedupeCard: {
+    backgroundColor: 'rgba(124,107,166,0.12)',
+    borderWidth: 1, borderColor: Colors.softSpiceLilac,
+    borderRadius: BorderRadius.lg, padding: Spacing.md, marginBottom: Spacing.sm,
+  },
+  dedupeLabel: { fontSize: Typography.fontSize.xs, color: Colors.softSpiceLilac, fontWeight: '800', letterSpacing: 1, marginBottom: 4 },
+  dedupeReason: { fontSize: Typography.fontSize.sm, color: Colors.text, marginBottom: Spacing.sm, fontStyle: 'italic' },
+  dedupeItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
+  dedupeItemText: { flex: 1, fontSize: Typography.fontSize.sm, color: Colors.textSubtle },
+  dedupeActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
 });
