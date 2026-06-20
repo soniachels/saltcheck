@@ -373,7 +373,7 @@ CONTRADICTIONS:
 - If the dump clashes with an existing loop (reschedules it, cancels it, replaces it, or double-books the same time), add a `contradictions` entry: the existing loop, the new thing, and a short question to resolve it. Keep going with your best guess; set needs_clarity true ONLY if you genuinely cannot give a useful plan without the answer.
 
 REPEATS:
-- If a dumped item looks like something ALREADY in the existing open loops (same task, reworded), do NOT create a new loop for it. Add a `contradictions` entry asking whether it's the same loop or a genuinely new one (e.g. "You already have 'X' — same thing, or new?"). Never quietly duplicate.
+- If a dumped item looks like something ALREADY in the existing open loops, do NOT create a new loop. Match by SUBJECT — the people, deliverable, or event — not the exact words. (e.g. "draft the Eric & Bada poster", "create graphic for Eric and Bada", "Eric/Bada artwork" are ALL the same loop.) When the user gives timing for it, use schedule_updates to move the existing loop, not a new one. If unsure same-vs-new, add a `contradictions` entry asking. Never quietly duplicate.
 
 WORK PRECEDENCE:
 - If two or more WORK tasks compete for the same top slot and you can't tell which wins, add a clarity_question like "which is more urgent — X or Y?".
@@ -403,6 +403,7 @@ STRICT RULES FOR CLASSIFICATION (read carefully):
    - NEVER include money payments here. "Pay credit card" is a BILL, not a salt_check item.
    - NEVER include vague items ("get my life together"). Pass those to clarity_questions instead.
    - If something is big (multiple steps), put the FIRST CONCRETE NEXT STEP in salt_check and the full project in loops_to_create.
+   - Do NOT put tasks you are scheduling for a specific later day/time into salt_check — those already live on the day timeline. salt_check is what to focus on RIGHT NOW, not the scheduled stuff.
    - MAX 3 items. Be ruthless.
 
 2. **loops_to_create** — Open loops (tasks/projects) with optional deadlines.
@@ -731,11 +732,29 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         async for _t in tasks_collection.find({"user_id": user_id, "status": {"$ne": "done"}}, {"title": 1}):
             existing_titles.append((_t.get("title") or "").strip().lower())
 
+        import re as _re
+        _STOP = {"the", "a", "an", "for", "and", "to", "of", "on", "in", "with", "my",
+                 "do", "make", "create", "draft", "design", "prep", "prepare", "update",
+                 "new", "get", "set", "up", "graphic", "poster"}
+
+        def _sig_words(s: str):
+            return {w for w in _re.findall(r"[a-z0-9]+", (s or "").lower()) if w not in _STOP and len(w) > 1}
+
         def _is_repeat(t: str) -> bool:
             n = t.strip().lower()
+            nw = _sig_words(t)
             for e in existing_titles:
-                if e and (n == e or (len(n) > 4 and (n in e or e in n))):
+                if not e:
+                    continue
+                if n == e or (len(n) > 4 and (n in e or e in n)):
                     return True
+                ew = _sig_words(e)
+                if nw and ew:
+                    inter = len(nw & ew)
+                    union = len(nw | ew)
+                    # high overlap, or the smaller title is essentially a subset
+                    if (union and inter / union >= 0.5) or (inter >= 2 and inter >= min(len(nw), len(ew))):
+                        return True
             return False
 
         repeat_loops: List[str] = []
