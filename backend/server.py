@@ -349,8 +349,9 @@ Format your response as JSON with these keys:
   "quick_read": "One line emotional read",
   "salt_check": ["Move 1", "Move 2", "Move 3"],
   "loops_to_create": [
-    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "non_negotiable": false, "linked_priority_index": 0}
+    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "scheduled_date": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "non_negotiable": false, "linked_priority_index": 0}
   ],
+  "schedule_updates": [{"title": "exact title of an EXISTING loop to re-schedule", "scheduled_date": "YYYY-MM-DD", "time": "HH:MM or null"}],
   "parked": ["Item 1", "Item 2"],
   "money_check": "One money-related insight or null",
   "body_check": "One body-related insight or null",
@@ -387,6 +388,13 @@ NON-NEGOTIABLES:
 
 SUBTASKS:
 - If a loop has multiple steps, list them in `subtasks` (array of short strings). NEVER cram multiple steps into one title, and NEVER pile several actions into a single salt_check item.
+
+SCHEDULING (when to do things) — THIS MATTERS:
+- When the user says WHEN to do something ("tomorrow", "Wednesday", "this morning", "before Friday"), convert it to a scheduled_date (YYYY-MM-DD using TODAY) and a time (HH:MM) if given.
+- For a NEW task, put scheduled_date (and time) right in its loops_to_create entry.
+- For an EXISTING loop (it's in EXISTING OPEN LOOPS) the user gives timing for, DON'T create a new loop — add it to `schedule_updates` with the EXACT existing title + scheduled_date/time. This moves the real loop onto that day.
+- `deadline` = when it's DUE. `scheduled_date` = when they plan to DO it. If the user only gives a due date, set deadline; if they say when they'll do it, set scheduled_date. They can differ.
+- "I'm full Monday, maybe Wednesday" → schedule it for Wednesday, not Monday.
 
 STRICT RULES FOR CLASSIFICATION (read carefully):
 
@@ -655,7 +663,10 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 {"user_id": user_id, "date": datetime.utcnow().strftime("%Y-%m-%d")}
             )
             existing_priorities = (today_doc or {}).get("top_priorities", []) or []
+            _now = datetime.utcnow()
             context_block = (
+                f"\n\nTODAY IS {_now.strftime('%Y-%m-%d')} ({_now.strftime('%A')}). "
+                f"Resolve any relative timing the user gives (today, tomorrow, Monday, this week) into YYYY-MM-DD dates."
                 f"\n\nEXISTING OPEN LOOPS (do NOT duplicate these; ADD to them and flag contradictions): "
                 f"{_json.dumps(existing_tasks)}"
                 f"\nTODAY'S CURRENT TOP 3: {_json.dumps(existing_priorities)}"
@@ -751,6 +762,8 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "next_action": loop_spec.get("next_action") or None,
                     "deadline": loop_spec.get("deadline") or None,
                     "time": loop_spec.get("time") or None,
+                    "scheduled_date": loop_spec.get("scheduled_date") or None,
+                    "kind": "task",
                     "subtasks": subtasks,
                     "non_negotiable": bool(loop_spec.get("non_negotiable")),
                     "status": "not_started",
@@ -784,6 +797,32 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 {"_id": result.inserted_id},
                 {"$set": {"ai_response": ai_response}},
             )
+
+        # ---- Apply schedule updates to EXISTING loops (move them onto a day/time) ----
+        sched_updates = ai_response.get("schedule_updates") or []
+        if isinstance(sched_updates, list):
+            active = []
+            async for t in tasks_collection.find({"user_id": user_id, "status": {"$ne": "done"}}):
+                active.append(t)
+            for su in sched_updates:
+                if not isinstance(su, dict):
+                    continue
+                want = (su.get("title") or "").strip().lower()
+                if not want:
+                    continue
+                set_fields = {}
+                if su.get("scheduled_date"):
+                    set_fields["scheduled_date"] = str(su["scheduled_date"])
+                if su.get("time") and su.get("time") not in ("null", ""):
+                    set_fields["time"] = str(su["time"])
+                if not set_fields:
+                    continue
+                set_fields["updated_at"] = datetime.utcnow()
+                for t in active:
+                    et = (t.get("title") or "").strip().lower()
+                    if et and (et == want or (len(want) > 4 and (want in et or et in want))):
+                        await tasks_collection.update_one({"_id": t["_id"]}, {"$set": set_fields})
+                        break
 
         # Pick action items by keyword heuristic (work/money/life)
         work_action = None
