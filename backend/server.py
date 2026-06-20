@@ -377,6 +377,9 @@ REPEATS:
 WORK PRECEDENCE:
 - If two or more WORK tasks compete for the same top slot and you can't tell which wins, add a clarity_question like "which is more urgent — X or Y?".
 
+CALENDAR CONFLICTS:
+- Existing loops may carry a `scheduled_date` (YYYY-MM-DD) and `time`, and some are `kind: "appointment"`. If a new dumped item lands on a day/time that's already busy — especially clashing with an appointment or a non-negotiable on the same day — add a `contradictions` entry: name the existing thing, the new thing, and ask which moves (e.g. "that clashes with your Tue 3pm shoot — move one?"). Don't silently double-book.
+
 NON-NEGOTIABLES:
 - Existing loops may be marked `non_negotiable: true` — these are must-do today. NEVER park them or drop them out of the top 3; keep them in salt_check if at all relevant today.
 - In loops_to_create, set `"non_negotiable": true` ONLY when the user clearly says a thing is a must / non-negotiable / can't skip / has to happen today. Otherwise false.
@@ -645,6 +648,8 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "deadline": t.get("deadline"),
                     "time": t.get("time"),
                     "non_negotiable": bool(t.get("non_negotiable")),
+                    "kind": t.get("kind") or "task",
+                    "scheduled_date": t.get("scheduled_date"),
                 })
             today_doc = await daily_entries_collection.find_one(
                 {"user_id": user_id, "date": datetime.utcnow().strftime("%Y-%m-%d")}
@@ -998,7 +1003,8 @@ Build a realistic plan that spreads the work across days starting from today.
 
 Rules:
 - Non-negotiables and items with a near deadline get priority and earlier days/times.
-- Appointments (kind="appointment") keep their existing day+time — never move them.
+- Appointments (kind="appointment") keep their existing scheduled_date+time — never move them.
+- Loops that already have a sensible scheduled_date can keep it; only reshuffle what's unplaced or clearly mis-timed (e.g. after a near deadline).
 - Give each loop a scheduled_date (YYYY-MM-DD, today or later) and, when sensible, a time (HH:MM, daytime hours). Don't cram everything into one day — aim for 2-4 meaningful loops per day.
 - If a loop is too vague to place well (unclear context, length, or timing), still give a best-effort slot BUT add a clarify question.
 
@@ -1029,6 +1035,7 @@ async def organize_loops(body: OrganizeRequest, current: dict = Depends(get_curr
             "deadline": t.get("deadline"),
             "non_negotiable": bool(t.get("non_negotiable")),
             "kind": t.get("kind") or "task",
+            "scheduled_date": t.get("scheduled_date"),
         })
     if not loops:
         return {"plan": [], "clarify": []}

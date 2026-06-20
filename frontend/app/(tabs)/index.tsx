@@ -46,7 +46,7 @@ export default function TodayScreen() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
-  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task' });
+  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string; scheduled_date: string }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
@@ -195,10 +195,10 @@ export default function TodayScreen() {
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
-      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task' });
+      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task', scheduled_date: task.scheduled_date || '' });
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task' });
+      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
     }
     setSubtaskDraft('');
     setTaskModal(true);
@@ -217,7 +217,7 @@ export default function TodayScreen() {
       subtasks: taskForm.subtasks,
       non_negotiable: taskForm.non_negotiable,
       kind: taskForm.kind,
-      scheduled_date: editingTask?.scheduled_date || null,
+      scheduled_date: taskForm.scheduled_date || null,
       status: editingTask?.status || 'not_started',
       parked: editingTask?.parked || false,
     };
@@ -554,12 +554,14 @@ export default function TodayScreen() {
         )}
 
         {/* Organize / plan my days */}
-        {untimedTasks.length > 0 && (
+        {activeTasks.length > 0 && (
           <TouchableOpacity style={styles.organizeBtn} onPress={organizeDay} disabled={planLoading} testID="organize-btn">
             {planLoading
               ? <ActivityIndicator size="small" color={Colors.inkBlack} />
               : <Ionicons name="sparkles" size={16} color={Colors.inkBlack} />}
-            <Text style={styles.organizeText}>{planLoading ? 'PEPPER IS PLANNING…' : 'ORGANIZE MY DAYS'}</Text>
+            <Text style={styles.organizeText}>
+              {planLoading ? 'PEPPER IS PLANNING…' : untimedTasks.length > 0 ? 'ORGANIZE MY DAYS' : 'RE-PLAN MY DAYS'}
+            </Text>
           </TouchableOpacity>
         )}
 
@@ -904,6 +906,14 @@ export default function TodayScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
+
+              <DatePicker
+                label="DAY (when to do it)"
+                value={taskForm.scheduled_date}
+                onChange={(v) => setTaskForm({ ...taskForm, scheduled_date: v })}
+                placeholder="Pick a day (or leave in backlog)"
+                variant="lime"
+              />
 
               <Input
                 label={taskForm.kind === 'appointment' ? 'TIME (HH:MM)' : 'TIME (optional, HH:MM)'}
