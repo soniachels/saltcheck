@@ -29,7 +29,8 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const LOGO = require('../assets/saltylabz-logo.png');
+const LOGO = require('../assets/saltylabz-wordmark.png'); // tight crop, 711x206
+const WORDMARK = require('../assets/saltcheck-wordmark.png'); // 462x160
 const BG = [
   require('../assets/onb-bg-1.jpg'),
   require('../assets/onb-bg-2.jpg'),
@@ -95,7 +96,7 @@ export default function OnboardingScreen() {
             <TopBar index={0} onSkip={finish} />
             <View style={styles.body}>
               <Text style={styles.kicker}>MANAGED BY <Text style={{ color: Colors.brightRed }}>PEPPER.</Text></Text>
-              <Text style={styles.hero}>your life,{'\n'}unfiltered.</Text>
+              <Image source={WORDMARK} style={styles.wordmark} resizeMode="contain" />
               <Text style={styles.sub}>messages, money, work, that text you're ignoring. all of it.</Text>
             </View>
             <View style={styles.bottom}>
@@ -230,7 +231,8 @@ const styles = StyleSheet.create({
   slide: { width, height },
   safe: { flex: 1, paddingHorizontal: Spacing.lg },
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: Spacing.sm },
-  logo: { width: 120, height: 34 },
+  logo: { width: 104, height: 30 },
+  wordmark: { width: 250, height: 90, marginVertical: Spacing.sm, alignSelf: 'flex-start' },
   topRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   pageIndicator: { color: Colors.brightRed, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
   skip: { color: Colors.text, fontSize: Typography.fontSize.xs, fontWeight: '700', letterSpacing: 1, opacity: 0.7 },
