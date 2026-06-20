@@ -1100,12 +1100,13 @@ async def get_daily_entries(user_id: str, current: dict = Depends(get_current_us
         entries.append(DailyEntryResponse(**entry))
     return entries
 
-@app.get("/api/daily-entries/{user_id}/{date}", response_model=DailyEntryResponse)
+@app.get("/api/daily-entries/{user_id}/{date}", response_model=Optional[DailyEntryResponse])
 async def get_daily_entry_by_date(user_id: str, date: str, current: dict = Depends(get_current_user)):
     user_id = current["id"]
     entry = await daily_entries_collection.find_one({"user_id": user_id, "date": date})
     if not entry:
-        raise HTTPException(status_code=404, detail="Entry not found")
+        # A day with no plan yet is a valid empty state, not an error.
+        return None
     entry["id"] = str(entry["_id"])
     return DailyEntryResponse(**entry)
 

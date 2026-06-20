@@ -54,10 +54,15 @@ apiClient.interceptors.response.use(
   (error) => {
     // If the session is rejected, drop the stale token so the next launch
     // routes back to the login screen.
-    if (error.response?.status === 401) {
+    const status = error.response?.status;
+    if (status === 401) {
       clearAuthToken();
     }
-    console.error('API Error:', error.response?.data || error.message);
+    // Only log genuine problems (server/network). 4xx are expected states the
+    // callers handle (e.g. an empty day), so don't spam the dev error overlay.
+    if (!error.response || status >= 500) {
+      console.error('API Error:', error.response?.data || error.message);
+    }
     return Promise.reject(error);
   }
 );
