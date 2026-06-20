@@ -38,6 +38,39 @@ function daysBetween(a: Date, b: Date) {
   return Math.floor((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+// Local-time YYYY-MM-DD (not UTC).
+function localDate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// "last taken" as a friendly relative string.
+function lastTakenLabel(med: any): string {
+  const hist = (med.intake_history || []).slice()
+    .sort((a: any, b: any) => String(b.taken_at || b.date).localeCompare(String(a.taken_at || a.date)));
+  if (!hist.length) return 'never';
+  const t = new Date(hist[0].taken_at || hist[0].date);
+  if (isNaN(t.getTime())) return 'recently';
+  const mins = Math.floor((Date.now() - t.getTime()) / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return days === 1 ? 'yesterday' : `${days}d ago`;
+}
+
+// "next due" based on frequency + whether it's been taken today.
+function nextDueLabel(med: any, takenToday: boolean): string {
+  if (med.frequency === 'as_needed') return 'as needed';
+  const when = med.time_of_day ? ` ${med.time_of_day}` : '';
+  if (med.frequency === 'weekly') return takenToday ? 'next: next week' : `due this week${when}`;
+  if (med.frequency === 'monthly') return takenToday ? 'next: next month' : `due this month${when}`;
+  return takenToday ? `next: tomorrow${when}` : `due today${when}`;
+}
+
 export default function BodyScreen() {
   const { currentUserId, pepperSpiceLevel, user, setAuthUser } = useAppStore();
   const [statsEditor, setStatsEditor] = useState<{ kind: 'height' | 'weight'; value: string } | null>(null);
@@ -79,22 +112,27 @@ export default function BodyScreen() {
     } catch (e) { console.error(e); }
   };
 
-  const latest = bodyLogs[0];
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDate();
+  const latest = bodyLogs[0]; // most recent log (any date)
+  // Daily fields (mood/sleep/appetite/water/symptoms) come from TODAY's log so
+  // they reset each day; persistent things read from the most recent entry that has them.
+  const todayLog = bodyLogs.find((l: any) => l.date === today);
+  const cycleLog = bodyLogs.find((l: any) => l.period_started_on);
+  const weightLog = bodyLogs.find((l: any) => typeof l.weight_optional === 'number');
 
   const cycleInfo = useMemo(() => {
-    if (!latest?.period_started_on) return null;
+    if (!cycleLog?.period_started_on) return null;
     try {
-      const start = new Date(latest.period_started_on);
+      const start = new Date(cycleLog.period_started_on);
       const tdy = new Date();
-      const cycleLen = latest.cycle_length_days || 28;
+      const cycleLen = cycleLog.cycle_length_days || 28;
       const dayOfCycle = (daysBetween(start, tdy) % cycleLen) + 1;
       const nextStart = new Date(start);
       while (nextStart < tdy) nextStart.setDate(nextStart.getDate() + cycleLen);
       const daysUntilNext = daysBetween(tdy, nextStart);
       return { dayOfCycle, cycleLen, daysUntilNext, nextDate: nextStart.toISOString().split('T')[0] };
     } catch { return null; }
-  }, [latest]);
+  }, [cycleLog]);
 
   const upsertField = async (field: string, value: any) => {
     const base = latest && latest.date === today ? latest : null;
@@ -108,7 +146,7 @@ export default function BodyScreen() {
   // ---- Body stats: height (profile, cm) + weight (daily log, kg) + BMI ----
   const unit: 'metric' | 'imperial' = user?.unit_system === 'imperial' ? 'imperial' : 'metric';
   const heightCm = user?.height_cm || null;
-  const weightKg = latest && typeof latest.weight_optional === 'number' ? latest.weight_optional : null;
+  const weightKg = weightLog && typeof weightLog.weight_optional === 'number' ? weightLog.weight_optional : null;
   const bmi = heightCm && weightKg ? weightKg / Math.pow(heightCm / 100, 2) : null;
   const bmiCategory = bmi == null ? '' : bmi < 18.5 ? 'under' : bmi < 25 ? 'in range' : bmi < 30 ? 'over' : 'high';
   const bmiColor = bmi == null ? Colors.text : bmi >= 18.5 && bmi < 25 ? Colors.pickleLime : bmi >= 30 ? Colors.brightRed : Colors.softSpiceLilac;
@@ -167,17 +205,17 @@ export default function BodyScreen() {
         return `${m.name}${m.dosage ? ` ${m.dosage}` : ''} (${m.frequency}${m.time_of_day ? ` ${m.time_of_day}` : ''}) — ${takenToday ? 'TAKEN today' : 'not taken today'}${streak > 0 ? `, ${streak}d streak` : ''}`;
       });
       const res = await apiClient.post(`/pepper/advise-body?user_id=${currentUserId}`, {
-        sleep: latest?.sleep,
-        appetite: latest?.appetite,
-        symptoms: latest?.symptoms,
-        mood: latest?.mood,
-        water: latest?.water,
-        period_started_on: latest?.period_started_on,
-        period_length_days: latest?.period_length_days,
-        cycle_length_days: latest?.cycle_length_days,
+        sleep: todayLog?.sleep,
+        appetite: todayLog?.appetite,
+        symptoms: todayLog?.symptoms,
+        mood: todayLog?.mood,
+        water: todayLog?.water,
+        period_started_on: cycleLog?.period_started_on,
+        period_length_days: cycleLog?.period_length_days,
+        cycle_length_days: cycleLog?.cycle_length_days,
         medications: medsContext.length > 0 ? medsContext : latest?.medications,
         appointments: latest?.appointments,
-        notes: latest?.notes,
+        notes: todayLog?.notes,
         spice_level: pepperSpiceLevel,
       });
       setAdvice(res.data);
@@ -352,7 +390,7 @@ export default function BodyScreen() {
         <ChipPicker
           label="MOOD"
           options={MOODS}
-          value={latest?.mood}
+          value={todayLog?.mood}
           onChange={(v) => upsertField('mood', v)}
           allowOther
           onOther={() => setOther({ kind: 'mood', value: '' })}
@@ -364,7 +402,7 @@ export default function BodyScreen() {
         <ChipPicker
           label="SLEEP"
           options={SLEEP}
-          value={latest?.sleep}
+          value={todayLog?.sleep}
           onChange={(v) => upsertField('sleep', v)}
           allowOther
           onOther={() => setOther({ kind: 'sleep', value: '' })}
@@ -376,7 +414,7 @@ export default function BodyScreen() {
         <ChipPicker
           label="APPETITE"
           options={APPETITE}
-          value={latest?.appetite}
+          value={todayLog?.appetite}
           onChange={(v) => upsertField('appetite', v)}
           allowOther
           onOther={() => setOther({ kind: 'appetite', value: '' })}
@@ -393,14 +431,14 @@ export default function BodyScreen() {
           <View style={styles.waterCounter}>
             <TouchableOpacity
               style={styles.waterBtn}
-              onPress={() => upsertField('water', Math.max(0, (latest?.water || 0) - 1))}
+              onPress={() => upsertField('water', Math.max(0, (todayLog?.water || 0) - 1))}
             >
               <Ionicons name="remove" size={20} color={Colors.text} />
             </TouchableOpacity>
-            <Text style={styles.waterValue}>{latest?.water || 0}</Text>
+            <Text style={styles.waterValue}>{todayLog?.water || 0}</Text>
             <TouchableOpacity
               style={styles.waterBtn}
-              onPress={() => upsertField('water', (latest?.water || 0) + 1)}
+              onPress={() => upsertField('water', (todayLog?.water || 0) + 1)}
             >
               <Ionicons name="add" size={20} color={Colors.text} />
             </TouchableOpacity>
@@ -428,28 +466,26 @@ export default function BodyScreen() {
 
         {/* Symptoms */}
         <CategoryCard
-          title={latest?.symptoms ? 'SYMPTOMS' : 'ADD SYMPTOMS'}
-          subtitle={latest?.symptoms || 'headache, cramps, anything weird'}
+          title={todayLog?.symptoms ? 'SYMPTOMS' : 'ADD SYMPTOMS'}
+          subtitle={todayLog?.symptoms || 'headache, cramps, anything weird'}
           icon="medkit"
           variant="dark"
-          onPress={() => { setSymptomForm(latest?.symptoms || ''); setSymptomEditor(true); }}
+          onPress={() => { setSymptomForm(todayLog?.symptoms || ''); setSymptomEditor(true); }}
         />
 
         {/* Meds — full tracker with schedule + intake history */}
         <Text style={styles.sectionLabel}>MEDICATIONS.</Text>
-        <Text style={styles.sectionHint}>tap "TAKE" when you take it. pepper tracks the streak.</Text>
+        <Text style={styles.sectionHint}>tap "TAKE" when you take it. pepper tracks last + next.</Text>
         {meds.map((m: any) => {
           const takenToday = (m.intake_history || []).some((h: any) => h.date === today);
-          const { taken7, streak } = computeStreak(m);
-          const freqLabel = m.frequency === 'as_needed' ? 'PRN' : m.frequency.toUpperCase();
-          const timeLabel = m.time_of_day ? ` · ${m.time_of_day}` : '';
           const dosageLabel = m.dosage ? `${m.dosage}  ·  ` : '';
-          const streakLabel = streak > 0 ? `🔥 ${streak}d streak` : taken7 > 0 ? `${taken7}/7 this week` : 'not yet this week';
+          const last = lastTakenLabel(m);
+          const next = nextDueLabel(m, takenToday);
           return (
             <CategoryCard
               key={m.id}
               title={m.name}
-              subtitle={`${dosageLabel}${freqLabel}${timeLabel}  ·  ${streakLabel}`}
+              subtitle={`${dosageLabel}last: ${last}  ·  ${next}`}
               icon="medical"
               variant={takenToday ? 'lime' : 'dark'}
               onPress={() => openMedEditor(m)}
