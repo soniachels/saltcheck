@@ -277,6 +277,21 @@ export const PepperFab: React.FC = () => {
                         {response.ai_response.quick_read}
                       </PepperBubble>
 
+                      {Array.isArray(response.ai_response.contradictions) && response.ai_response.contradictions.length > 0 && (
+                        <>
+                          <Text style={styles.sectionLabel}>HOLD ON — THIS CLASHES.</Text>
+                          {response.ai_response.contradictions.map((c: any, i: number) => (
+                            <CategoryCard
+                              key={i}
+                              title={c.question || 'Same or new?'}
+                              subtitle={`already on your list: ${c.existing || '—'}`}
+                              icon="git-compare"
+                              variant="red"
+                            />
+                          ))}
+                        </>
+                      )}
+
                       {response.ai_response.salt_check?.length > 0 && (
                         <>
                           <Text style={styles.sectionLabel}>TODAY'S SALT CHECK</Text>

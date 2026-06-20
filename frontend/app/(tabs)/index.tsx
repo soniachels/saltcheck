@@ -10,6 +10,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
@@ -51,6 +52,13 @@ export default function TodayScreen() {
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [expandedLoops, setExpandedLoops] = useState<Record<string, boolean>>({});
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadAll();
+    setRefreshing(false);
+  };
 
   const toggleExpand = (id: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.create(220, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
@@ -376,7 +384,13 @@ export default function TodayScreen() {
         <LinearGradient colors={['rgba(168,189,79,0.12)', 'transparent']} style={[styles.blob, { bottom: 30, right: -50 }]} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brightRed} colors={[Colors.brightRed]} />
+        }
+      >
         {/* Hero */}
         <View style={styles.hero}>
           <Text style={[styles.dateLabel, { color: accentColor }]}>

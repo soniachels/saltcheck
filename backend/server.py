@@ -365,6 +365,9 @@ ADDITIVE BEHAVIOR (critical):
 CONTRADICTIONS:
 - If the dump clashes with an existing loop (reschedules it, cancels it, replaces it, or double-books the same time), add a `contradictions` entry: the existing loop, the new thing, and a short question to resolve it. Keep going with your best guess; set needs_clarity true ONLY if you genuinely cannot give a useful plan without the answer.
 
+REPEATS:
+- If a dumped item looks like something ALREADY in the existing open loops (same task, reworded), do NOT create a new loop for it. Add a `contradictions` entry asking whether it's the same loop or a genuinely new one (e.g. "You already have 'X' — same thing, or new?"). Never quietly duplicate.
+
 WORK PRECEDENCE:
 - If two or more WORK tasks compete for the same top slot and you can't tell which wins, add a clarity_question like "which is more urgent — X or Y?".
 
@@ -692,12 +695,32 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         # ---- Create loops and link each to its top-3 priority ----
         # priorities_task_ids[i] = task_id linked to salt_check_items[i]
         priorities_task_ids: List[Optional[str]] = [None] * len(salt_check_items[:3])
+
+        # Guard against duplicate loops: collect existing active task titles so we
+        # never silently recreate something already on the list. Near-matches get
+        # surfaced to the user as a clarify question instead of being added again.
+        existing_titles = []
+        async for _t in tasks_collection.find({"user_id": user_id, "status": {"$ne": "done"}}, {"title": 1}):
+            existing_titles.append((_t.get("title") or "").strip().lower())
+
+        def _is_repeat(t: str) -> bool:
+            n = t.strip().lower()
+            for e in existing_titles:
+                if e and (n == e or (len(n) > 4 and (n in e or e in n))):
+                    return True
+            return False
+
+        repeat_loops: List[str] = []
+
         if isinstance(loops_to_create, list):
             for loop_spec in loops_to_create:
                 if not isinstance(loop_spec, dict):
                     continue
                 title = (loop_spec.get("title") or "").strip()
                 if not title:
+                    continue
+                if _is_repeat(title):
+                    repeat_loops.append(title)
                     continue
                 # Normalize subtasks into [{title, done}] shape.
                 raw_subs = loop_spec.get("subtasks") or []
@@ -723,6 +746,24 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 link_idx = loop_spec.get("linked_priority_index")
                 if isinstance(link_idx, int) and 0 <= link_idx < len(priorities_task_ids):
                     priorities_task_ids[link_idx] = task_id
+
+        # Surface repeats so PEPPER asks instead of silently duplicating a loop.
+        if repeat_loops:
+            contradictions = ai_response.get("contradictions")
+            if not isinstance(contradictions, list):
+                contradictions = []
+            for rt in repeat_loops:
+                contradictions.append({
+                    "existing": rt,
+                    "new": rt,
+                    "question": f"You already have '{rt}' open — same loop, or a new one?",
+                })
+            ai_response["contradictions"] = contradictions
+            checkin_doc["ai_response"] = ai_response
+            await ai_checkins_collection.update_one(
+                {"_id": result.inserted_id},
+                {"$set": {"ai_response": ai_response}},
+            )
 
         # Pick action items by keyword heuristic (work/money/life)
         work_action = None
