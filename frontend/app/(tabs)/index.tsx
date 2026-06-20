@@ -108,7 +108,7 @@ export default function TodayScreen() {
   const organizeDay = async () => {
     setPlanLoading(true);
     try {
-      const r = await apiClient.post('/pepper/organize', { start_date: today }, { params: { user_id: currentUserId } });
+      const r = await apiClient.post('/pepper/organize', { start_date: today }, { params: { user_id: currentUserId }, timeout: 120000 });
       const p = r.data?.plan || [];
       setPlan(p);
       setPlanClarify(r.data?.clarify || []);

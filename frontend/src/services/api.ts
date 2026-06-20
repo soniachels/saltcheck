@@ -31,7 +31,8 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000,
+  // Generous default — PEPPER's AI calls (sort/advise) can take a while.
+  timeout: 60000,
 });
 
 // Request interceptor — attach the bearer token to every call.
