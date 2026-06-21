@@ -398,6 +398,7 @@ STRICT RULES FOR CLASSIFICATION (read carefully):
    - NEVER include vague items ("get my life together"). Pass those to clarity_questions instead.
    - If something is big (multiple steps), put the FIRST CONCRETE NEXT STEP in salt_check and the full project in loops_to_create.
    - Do NOT put tasks you are scheduling for a specific later day/time into salt_check — those already live on the day timeline. salt_check is what to focus on RIGHT NOW, not the scheduled stuff.
+   - If the dump is ONLY about money/bills or body/health (no new to-do), return salt_check EMPTY ([]). NEVER pull the user's existing loops into salt_check just to fill it — leave today's Top 3 alone.
    - MAX 3 items. Be ruthless.
 
 2. **loops_to_create** — Open loops (tasks/projects) with optional deadlines.
@@ -733,6 +734,8 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         needs_clarity = bool(ai_response.get("needs_clarity"))
         salt_check_items = ai_response.get("salt_check", []) if not needs_clarity else []
         loops_to_create = ai_response.get("loops_to_create", []) if not needs_clarity else []
+        # A money/bill/body-only dump has no new to-dos — don't touch today's Top 3.
+        skip_priorities = needs_clarity or not salt_check_items
         
         # ---- Create loops and link each to its top-3 priority ----
         # priorities_task_ids[i] = task_id linked to salt_check_items[i]
@@ -906,8 +909,9 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     aligned_ids.append(None)
             daily_entry_data["priorities_done"] = aligned_done
             daily_entry_data["priorities_task_ids"] = aligned_ids
-            # Don't blow away today's entry if PEPPER asked for clarity (no salt_check provided)
-            if needs_clarity:
+            # Leave today's Top 3 untouched if there are no new to-dos (clarity
+            # request, or a money/body-only dump).
+            if skip_priorities:
                 daily_entry_data.pop("top_priorities", None)
                 daily_entry_data.pop("priorities_done", None)
                 daily_entry_data.pop("priorities_task_ids", None)
@@ -916,6 +920,10 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 {"$set": daily_entry_data}
             )
         elif not needs_clarity:
+            if skip_priorities:
+                daily_entry_data.pop("top_priorities", None)
+                daily_entry_data.pop("priorities_done", None)
+                daily_entry_data.pop("priorities_task_ids", None)
             daily_entry_data["water_checked"] = False
             daily_entry_data["food_checked"] = False
             daily_entry_data["hygiene_checked"] = False

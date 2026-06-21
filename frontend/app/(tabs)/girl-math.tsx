@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Modal, TouchableOpacity, Alert,
+  View, Text, StyleSheet, ScrollView, Modal, TouchableOpacity, Alert, RefreshControl,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -103,6 +103,9 @@ export default function GirlMathScreen() {
       }
     } catch (e) {}
   };
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = async () => { setRefreshing(true); await loadEntry(); setRefreshing(false); };
 
   const upsertField = async (patch: any) => {
     // Always operate on the latest entry — bills/income/doom/soft should persist
@@ -382,7 +385,11 @@ export default function GirlMathScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brightRed} colors={[Colors.brightRed]} />}
+      >
         <View style={styles.hero}>
           <Text style={styles.heroLabel}>* GIRL MATH</Text>
           <Text style={styles.heroTitle}>the floor is the floor.</Text>
