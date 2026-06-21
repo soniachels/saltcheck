@@ -41,6 +41,7 @@ daily_entries_collection = db["daily_entries"]
 projects_collection = db["projects"]
 tasks_collection = db["tasks"]
 money_entries_collection = db["money_entries"]
+transactions_collection = db["transactions"]
 body_logs_collection = db["body_logs"]
 medications_collection = db["medications"]
 person_notes_collection = db["person_notes"]
@@ -53,6 +54,14 @@ async def _ensure_indexes():
     # fresh deploy gets the same guarantee as local dev.
     try:
         await money_entries_collection.create_index("user_id", unique=True)
+    except Exception:
+        pass
+    # Transaction log: a timestamped event for every money movement (bill paid,
+    # income received, doom spend, soft saving). Unlike the singleton ledger this
+    # is append-only, so the cash-flow report can be a true time-series instead of
+    # a snapshot. Indexed for range queries by when the money actually moved.
+    try:
+        await transactions_collection.create_index([("user_id", 1), ("occurred_at", -1)])
     except Exception:
         pass
 
@@ -222,6 +231,33 @@ class MoneyEntryResponse(BaseModel):
     soft_savings: Optional[List[dict]] = None
     created_at: datetime
     updated_at: datetime
+
+# A single money movement. `kind` determines direction: income_received and
+# soft_saving add to the balance (+), bill_paid and doom_spend take from it (−).
+# `amount` is always stored positive; `signed_amount` on the response applies
+# the direction so clients don't have to know the sign convention.
+TXN_KINDS = {"bill_paid", "income_received", "doom_spend", "soft_saving"}
+TXN_INFLOWS = {"income_received", "soft_saving"}
+
+class TransactionCreate(BaseModel):
+    kind: str
+    label: str
+    amount: float
+    currency: Optional[str] = "USD"
+    occurred_at: Optional[datetime] = None  # defaults to server now
+    regret: Optional[int] = None  # doom spends only (0-4)
+
+class TransactionResponse(BaseModel):
+    id: str
+    user_id: str
+    kind: str
+    label: str
+    amount: float
+    signed_amount: float
+    currency: Optional[str] = "USD"
+    occurred_at: datetime
+    regret: Optional[int] = None
+    created_at: datetime
 
 class BodyLogCreate(BaseModel):
     date: str
@@ -1364,6 +1400,74 @@ async def update_money_entry(entry_id: str, entry: MoneyEntryCreate, current: di
     updated_entry = await money_entries_collection.find_one({"_id": ObjectId(entry_id)})
     updated_entry["id"] = str(updated_entry["_id"])
     return MoneyEntryResponse(**updated_entry)
+
+# Transaction log endpoints
+def _txn_response(doc: dict) -> TransactionResponse:
+    amount = abs(doc.get("amount") or 0)
+    sign = 1 if doc.get("kind") in TXN_INFLOWS else -1
+    return TransactionResponse(
+        id=str(doc["_id"]),
+        user_id=doc["user_id"],
+        kind=doc["kind"],
+        label=doc.get("label", ""),
+        amount=amount,
+        signed_amount=sign * amount,
+        currency=doc.get("currency", "USD"),
+        occurred_at=doc["occurred_at"],
+        regret=doc.get("regret"),
+        created_at=doc["created_at"],
+    )
+
+@app.post("/api/transactions", response_model=TransactionResponse)
+async def create_transaction(txn: TransactionCreate, current: dict = Depends(get_current_user)):
+    if txn.kind not in TXN_KINDS:
+        raise HTTPException(status_code=400, detail=f"Invalid kind: {txn.kind}")
+    doc = {
+        "user_id": current["id"],
+        "kind": txn.kind,
+        "label": txn.label,
+        "amount": abs(txn.amount or 0),
+        "currency": txn.currency or "USD",
+        "occurred_at": txn.occurred_at or datetime.utcnow(),
+        "regret": txn.regret,
+        "created_at": datetime.utcnow(),
+    }
+    result = await transactions_collection.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return _txn_response(doc)
+
+@app.get("/api/transactions/{user_id}", response_model=List[TransactionResponse])
+async def get_transactions(
+    user_id: str,
+    start: Optional[str] = None,  # ISO date/datetime, inclusive
+    end: Optional[str] = None,    # ISO date/datetime, inclusive
+    current: dict = Depends(get_current_user),
+):
+    query: dict = {"user_id": current["id"]}
+    if start or end:
+        rng: dict = {}
+        if start:
+            rng["$gte"] = datetime.fromisoformat(start)
+        if end:
+            # If a bare date is given, include the whole day.
+            end_dt = datetime.fromisoformat(end)
+            if len(end) <= 10:
+                end_dt = end_dt.replace(hour=23, minute=59, second=59)
+            rng["$lte"] = end_dt
+        query["occurred_at"] = rng
+    txns = []
+    async for doc in transactions_collection.find(query).sort("occurred_at", -1):
+        txns.append(_txn_response(doc))
+    return txns
+
+@app.delete("/api/transactions/{txn_id}")
+async def delete_transaction(txn_id: str, current: dict = Depends(get_current_user)):
+    result = await transactions_collection.delete_one(
+        {"_id": ObjectId(txn_id), "user_id": current["id"]}
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return {"ok": True}
 
 # Body Log endpoints
 @app.post("/api/body-logs", response_model=BodyLogResponse)

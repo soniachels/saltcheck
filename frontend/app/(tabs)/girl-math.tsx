@@ -30,10 +30,17 @@ function isoWeekKey(d: Date) {
 }
 
 // Advance a date string by one recurrence period (for recurring income/bills).
+// Handles "weekly"/"biweekly"/"monthly" and free-form "every N months/weeks"
+// (e.g. "every 5 months") so multi-period cycles land on the right date.
 function advanceDate(iso: string | undefined, period: string): string {
   const base = iso ? new Date(iso) : new Date();
-  if (period === 'weekly') base.setDate(base.getDate() + 7);
-  else if (period === 'biweekly') base.setDate(base.getDate() + 14);
+  const p = (period || '').toLowerCase();
+  const everyWeeks = p.match(/(\d+)\s*week/);
+  const everyMonths = p.match(/(\d+)\s*month/);
+  if (p === 'weekly') base.setDate(base.getDate() + 7);
+  else if (p === 'biweekly') base.setDate(base.getDate() + 14);
+  else if (everyWeeks) base.setDate(base.getDate() + 7 * parseInt(everyWeeks[1], 10));
+  else if (everyMonths) base.setMonth(base.getMonth() + parseInt(everyMonths[1], 10));
   else base.setMonth(base.getMonth() + 1); // monthly default
   return base.toISOString().slice(0, 10);
 }
@@ -122,6 +129,22 @@ export default function GirlMathScreen() {
     }
   };
 
+  // Append-only transaction log: every money movement (bill paid, income
+  // received, doom, soft) is recorded with a real timestamp so the cash-flow
+  // report is a true time-series. The returned id is stashed on the item as
+  // `_txn` so undo/remove can delete the matching transaction.
+  const recordTxn = async (kind: string, label: string, amount: number, regret?: number): Promise<string | undefined> => {
+    if (!amount || amount <= 0) return undefined; // nothing to log for unknown amounts
+    try {
+      const r = await apiClient.post('/transactions', { kind, label: label || '—', amount, currency, regret });
+      return r.data?.id;
+    } catch (e) { return undefined; }
+  };
+  const deleteTxn = async (txnId?: string) => {
+    if (!txnId) return;
+    try { await apiClient.delete(`/transactions/${txnId}`); } catch (e) {}
+  };
+
   const thisWeek = isoWeekKey(new Date());
 
   // Filter doom/soft to current ISO week. Items without a date default to "this week".
@@ -185,8 +208,16 @@ export default function GirlMathScreen() {
     }
     setReportBusy(true);
     try {
+      // Pull the real transaction log for the range so the report is an actual
+      // time-series of when money moved, not a snapshot of scheduled dates.
+      let transactions: any[] = [];
+      try {
+        const r = await apiClient.get(`/transactions/${currentUserId}?start=${reportStart}&end=${reportEnd}`);
+        transactions = r.data || [];
+      } catch (e) {}
       await generateCashflowPdf({
         entry,
+        transactions,
         startDate: reportStart,
         endDate: reportEnd,
         fmt: (n: number) => formatMoney(n, currency),
@@ -271,11 +302,34 @@ export default function GirlMathScreen() {
 
   const toggleBillPaid = async (idx: number) => {
     const bills = [...allBills];
-    bills[idx] = { ...bills[idx], paid: !bills[idx].paid };
+    const bill = bills[idx];
+    const nowPaid = !bill.paid;
+    let txnId = bill._txn;
+    if (nowPaid) {
+      txnId = await recordTxn('bill_paid', bill.label, bill.amount);
+    } else {
+      await deleteTxn(bill._txn);
+      txnId = undefined;
+    }
+    bills[idx] = { ...bill, paid: nowPaid, _txn: txnId };
+    // Recurring bill: when first marked paid, spin up the next occurrence
+    // (unpaid, dated one period later) so it reappears next cycle — mirrors how
+    // recurring income works. _spawned guards against duplicates if re-toggled.
+    if (nowPaid && bill.recurring && !bill._spawned) {
+      bills[idx]._spawned = true;
+      bills.push({
+        label: bill.label,
+        amount: bill.amount,
+        recurring: bill.recurring,
+        due_date: advanceDate(bill.due_date, bill.recurring),
+        paid: false,
+      });
+    }
     await upsertField({ bills });
   };
 
   const removeBill = async (idx: number) => {
+    await deleteTxn(allBills[idx]?._txn);
     const bills = allBills.filter((_, i) => i !== idx);
     await upsertField({ bills });
     setBillModal({ open: false, editingIdx: null });
@@ -317,6 +371,7 @@ export default function GirlMathScreen() {
   };
 
   const removeIncome = async (idx: number) => {
+    await deleteTxn(allIncome[idx]?._txn);
     const income = allIncome.filter((_, i) => i !== idx);
     await upsertField({ income });
     setIncomeModal({ open: false, editingIdx: null });
@@ -326,7 +381,14 @@ export default function GirlMathScreen() {
     const income = [...allIncome];
     const item = income[idx];
     const nowReceived = !item.received;
-    income[idx] = { ...item, received: nowReceived };
+    let txnId = item._txn;
+    if (nowReceived) {
+      txnId = await recordTxn('income_received', item.label, item.amount);
+    } else {
+      await deleteTxn(item._txn);
+      txnId = undefined;
+    }
+    income[idx] = { ...item, received: nowReceived, _txn: txnId };
     // Recurring income: when first marked received, spin up the next occurrence
     // (unreceived, dated one period later). _spawned guards against duplicates.
     if (nowReceived && item.recurring && !item._spawned) {
@@ -347,11 +409,14 @@ export default function GirlMathScreen() {
       Alert.alert('Hold up', 'Need a label and amount.');
       return;
     }
+    const amount = parseFloat(doomForm.amount) || 0;
+    const txnId = await recordTxn('doom_spend', doomForm.label, amount, doomForm.regret);
     const ds = [...(entry?.doom_spends || []), {
       label: doomForm.label,
-      amount: parseFloat(doomForm.amount) || 0,
+      amount,
       regret: doomForm.regret,
       date: today,
+      _txn: txnId,
     }];
     await upsertField({ doom_spends: ds });
     setDoomModal(false);
@@ -363,10 +428,13 @@ export default function GirlMathScreen() {
       Alert.alert('Hold up', 'Need a label and amount.');
       return;
     }
+    const amount = parseFloat(softForm.amount) || 0;
+    const txnId = await recordTxn('soft_saving', softForm.label, amount);
     const ss = [...(entry?.soft_savings || []), {
       label: softForm.label,
-      amount: parseFloat(softForm.amount) || 0,
+      amount,
       date: today,
+      _txn: txnId,
     }];
     await upsertField({ soft_savings: ss });
     setSoftModal(false);
@@ -374,11 +442,13 @@ export default function GirlMathScreen() {
   };
 
   const removeDoom = async (i: number) => {
+    await deleteTxn((entry?.doom_spends || [])[i]?._txn);
     const ds = (entry?.doom_spends || []).filter((_: any, idx: number) => idx !== i);
     await upsertField({ doom_spends: ds });
   };
 
   const removeSoft = async (i: number) => {
+    await deleteTxn((entry?.soft_savings || [])[i]?._txn);
     const ss = (entry?.soft_savings || []).filter((_: any, idx: number) => idx !== i);
     await upsertField({ soft_savings: ss });
   };
