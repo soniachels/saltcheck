@@ -711,6 +711,54 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 {"user_id": user_id, "date": user_today(current)}
             )
             existing_priorities = (today_doc or {}).get("top_priorities", []) or []
+
+            # Money snapshot — so the verdict accounts for the real financial state,
+            # not just to-dos. Mirror the Girl Math math: floor − paid bills + income.
+            money_summary = None
+            money_doc = await money_entries_collection.find_one({"user_id": user_id})
+            if money_doc:
+                bills = money_doc.get("bills") or []
+                income = money_doc.get("income") or []
+                unpaid = [b for b in bills if not b.get("paid")]
+                start_bal = money_doc.get("cash_available") or 0
+                paid_total = sum((b.get("amount") or 0) for b in bills if b.get("paid"))
+                recv_total = sum((i.get("amount") or 0) for i in income if i.get("received"))
+                money_summary = {
+                    "currency": money_doc.get("currency") or "USD",
+                    "active_balance": round(start_bal - paid_total + recv_total, 2),
+                    "unpaid_bills_total": round(sum((b.get("amount") or 0) for b in unpaid), 2),
+                    "unpaid_bills_count": len(unpaid),
+                    "next_bills": [
+                        {"label": b.get("label"), "amount": b.get("amount"), "due_date": b.get("due_date")}
+                        for b in sorted(unpaid, key=lambda b: b.get("due_date") or "9999")[:3]
+                    ],
+                }
+
+            # Body snapshot — latest log + meds that are due, so the verdict can
+            # factor in how the user is actually doing physically.
+            body_summary = None
+            latest_body = await body_logs_collection.find_one(
+                {"user_id": user_id}, sort=[("date", -1)]
+            )
+            if latest_body:
+                body_summary = {
+                    "date": latest_body.get("date"),
+                    "mood": latest_body.get("mood"),
+                    "sleep": latest_body.get("sleep"),
+                    "appetite": latest_body.get("appetite"),
+                    "weight": latest_body.get("weight_optional"),
+                    "symptoms": latest_body.get("symptoms"),
+                    "period": latest_body.get("period"),
+                }
+            meds = []
+            async for m in medications_collection.find({"user_id": user_id, "active": {"$ne": False}}).limit(20):
+                hist = m.get("intake_history") or []
+                last_taken = hist[-1].get("taken_at") if hist else None
+                meds.append({
+                    "name": m.get("name"), "dosage": m.get("dosage"), "frequency": m.get("frequency"),
+                    "interval_hours": m.get("interval_hours"), "last_taken": last_taken,
+                })
+
             try:
                 _now = datetime.now(ZoneInfo(current.get("timezone") or "UTC"))
             except Exception:
@@ -721,6 +769,10 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 f"\n\nEXISTING OPEN LOOPS (do NOT duplicate these; ADD to them and flag contradictions): "
                 f"{_json.dumps(existing_tasks)}"
                 f"\nTODAY'S CURRENT TOP 3: {_json.dumps(existing_priorities)}"
+                f"\n\nFULL PICTURE (stay aware of ALL of this — money + body — when you give the verdict and next step; don't fixate only on the new dump):"
+                f"\nMONEY: {_json.dumps(money_summary)}"
+                f"\nBODY (latest): {_json.dumps(body_summary)}"
+                f"\nMEDICATIONS: {_json.dumps(meds)}"
             )
 
             user_message = UserMessage(

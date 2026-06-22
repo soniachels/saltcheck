@@ -469,20 +469,26 @@ export default function TodayScreen() {
   // otherwise AUTO-FILL from the day's scheduled tasks (non-negotiables first),
   // so a fresh morning isn't blank.
   const curatedTop3 = visiblePriorities.length > 0;
-  const dayTop3Tasks = tasks
+  // The day's scheduled tasks (non-negotiables first). Used to AUTO-FILL the Top
+  // 3 when there's no curated list, AND to BACKFILL when curated priorities don't
+  // fill all 3 — so moving a task onto/off a day updates the Top 3 accordingly.
+  const daySorted = tasks
     .filter((t) => !t.parked && (t.scheduled_date ? t.scheduled_date === selectedDate : (t.time && selectedIsToday)))
-    .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b))
-    .slice(0, 3);
-  const topThree: { key: string; title: string; done: boolean; nonNeg?: boolean; onToggle: () => void }[] =
-    curatedTop3
-      ? visiblePriorities.map(({ p, i }) => ({ key: `p${i}`, title: p, done: !!prioritiesDone[i], onToggle: () => togglePriorityDone(i) }))
-      : dayTop3Tasks.map((t) => ({
-          key: t.id,
-          title: t.title,
-          done: t.status === 'done',
-          nonNeg: !!t.non_negotiable,
-          onToggle: () => (t.status === 'done' ? reopenLoop(t) : markLoopDone(t)),
-        }));
+    .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b));
+  const curatedItems = visiblePriorities.map(({ p, i }) => ({
+    key: `p${i}`, title: p, done: !!prioritiesDone[i], taskId: prioritiesTaskIds[i] || null,
+    onToggle: () => togglePriorityDone(i),
+  }));
+  // Don't show the same task twice (once as a curated priority, once as a backfill).
+  const usedTaskIds = new Set(curatedItems.map((c) => c.taskId).filter(Boolean));
+  const backfillItems = daySorted
+    .filter((t) => !usedTaskIds.has(t.id))
+    .map((t) => ({
+      key: t.id, title: t.title, done: t.status === 'done', nonNeg: !!t.non_negotiable, taskId: t.id as string | null,
+      onToggle: () => (t.status === 'done' ? reopenLoop(t) : markLoopDone(t)),
+    }));
+  const topThree: { key: string; title: string; done: boolean; nonNeg?: boolean; taskId?: string | null; onToggle: () => void }[] =
+    [...curatedItems, ...backfillItems].slice(0, 3);
   const allTopDone = topThree.length > 0 && topThree.every((x) => x.done);
 
   // How many loops were completed today (drives the burnout warning).
@@ -782,16 +788,28 @@ export default function TodayScreen() {
             return (
               <View key={task.id} style={[styles.loopCard, task.non_negotiable && styles.loopCardNN]}>
                 <View style={styles.loopHeaderRow}>
+                  {/* One-tap finish: tap the ring to close the loop. Shows a
+                      checkmark when every step is done (ready to close). */}
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 8 }}
+                    onPress={() => (task.status === 'done' ? reopenLoop(task) : markLoopDone(task))}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Mark "${task.title}" done`}
+                  >
+                    <View style={[styles.ring, complete && styles.ringDone]}>
+                      {complete
+                        ? <Ionicons name="checkmark" size={18} color={Colors.inkBlack} />
+                        : subs.length > 0
+                        ? <Text style={styles.ringText}>{doneCount}/{subs.length}</Text>
+                        : <View style={styles.ringEmptyDot} />}
+                    </View>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.loopMain}
                     activeOpacity={0.8}
                     onPress={() => (subs.length > 0 ? toggleExpand(task.id) : openTaskEditor(task))}
                   >
-                    <View style={[styles.ring, complete && styles.ringDone]}>
-                      {subs.length > 0
-                        ? <Text style={[styles.ringText, complete && { color: Colors.inkBlack }]}>{doneCount}/{subs.length}</Text>
-                        : <View style={styles.ringEmptyDot} />}
-                    </View>
                     <View style={{ flex: 1 }}>
                       <View style={styles.loopTitleRow}>
                         {task.non_negotiable && <Ionicons name="lock-closed" size={12} color={Colors.brightRed} />}
