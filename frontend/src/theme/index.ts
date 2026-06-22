@@ -7,6 +7,13 @@ export const Colors = {
   softSpiceLilac: '#E2A9F1',
   saltBone: '#E6DCD1',
 
+  // Electric lime — Girl Math accent (brighter than pickleLime, matches mockup)
+  limeElectric: '#C9F23F', // primary punch (borders, glow, active text)
+  limeBright: '#D8F94E',   // brightest highlight (nested card, title)
+  limeCard: '#BFE04A',     // card fill base
+  limeDeep: '#8FA82B',     // shadow side of lime gradients
+  berryPill: '#D11E4F',    // the red "PAID?" pill / amount accents
+
   // Darks
   inkBlack: '#0D0D0D',
   charcoal: '#161616',
@@ -52,8 +59,14 @@ export const Spacing = {
 
 export const Typography = {
   fontFamily: {
-    mono: 'SpaceMono-Regular',
-    monoBold: 'SpaceMono-Bold',
+    // Girl Math type system (per design):
+    mono: 'IBMPlexMono',              // spaced labels + tabular numbers
+    monoMedium: 'IBMPlexMono-Medium',
+    monoSemi: 'IBMPlexMono-SemiBold',
+    monoBold: 'IBMPlexMono-Bold',
+    headline: 'Anton',                // condensed bold headline ("broke, again?")
+    display: 'Horizon',               // wide display — GIRL MATH, RM 300, card labels
+    displayAlt: 'ArchivoBlack',       // fallback heavy bold (kept available)
   },
   fontSize: {
     xs: 10,

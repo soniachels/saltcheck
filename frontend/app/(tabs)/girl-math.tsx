@@ -1,12 +1,18 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Modal, TouchableOpacity, Alert, RefreshControl,
+  View, Text, StyleSheet, ScrollView, Modal, TouchableOpacity, Alert, RefreshControl, Image,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Layout, Spacing, BorderRadius } from '../../src/theme';
 import { CategoryCard } from '../../src/components/CategoryCard';
+import { BrandLogo } from '../../src/components/BrandLogo';
+
+// Hero photo — drop your own image at this path (overwrite the file) to swap it.
+const HERO_IMG = require('../../assets/girlmath-hero.jpg');
 import { PepperBubble } from '../../src/components/PepperBubble';
 import { ChipPicker } from '../../src/components/ChipPicker';
 import { Button } from '../../src/components/Button';
@@ -74,6 +80,8 @@ function daysFromToday(iso: string): number | null {
 
 export default function GirlMathScreen() {
   const { currentUserId, nickname } = useAppStore();
+  const router = useRouter();
+  const openPepper = () => router.push('/pepper-checkin');
   const [entry, setEntry] = useState<any>(null);
   const [currency, setCurrency] = useState(detectCurrency());
 
@@ -111,6 +119,9 @@ export default function GirlMathScreen() {
     } catch (e) {}
   };
 
+  // Measured heights so the rounded photo card ends just below the balance card.
+  const [titleH, setTitleH] = useState(360);
+  const [cardH, setCardH] = useState(300);
   const [refreshing, setRefreshing] = useState(false);
   const onRefresh = async () => { setRefreshing(true); await loadEntry(); setRefreshing(false); };
 
@@ -248,6 +259,22 @@ export default function GirlMathScreen() {
 
   // Projected balance once everything still-outstanding settles.
   const projectedBalance = activeBalance - billsTotal + incomeTotal;
+
+  // ---- Dynamic PEPPER hero copy (reacts to the user's money state) ----
+  const hasOverdue = unpaidBills.some((b) => b.due_date && b.due_date < today);
+  const allBillsPaid = allBills.length > 0 && unpaidBills.length === 0;
+  const pepperMood =
+    hasOverdue ? 'SIDE-EYEING YOU' :
+    activeBalance < 0 ? 'WORRIED' :
+    allBillsPaid ? 'IMPRESSED' :
+    activeBalance >= 1000 ? 'PROUD' :
+    'BORED';
+  const heroHeadline =
+    activeBalance < 0 ? 'in the red, bestie.' :
+    hasOverdue ? 'pay your bills, bestie.' :
+    activeBalance < 100 ? 'broke, again?' :
+    activeBalance >= 1000 ? 'look at you, loaded.' :
+    "we're managing.";
 
   // Show conversational intake if no entry yet
   const showIntake = !entry || (
@@ -454,18 +481,32 @@ export default function GirlMathScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.brightRed} colors={[Colors.brightRed]} />}
       >
-        <View style={styles.hero}>
-          <Text style={styles.heroLabel}>* GIRL MATH</Text>
-          <Text style={styles.heroTitle}>the floor is the floor.</Text>
-          <Text style={styles.heroSub}>pay a bill, it drops. money in, it climbs.</Text>
+        {/* Rounded-bottom photo card behind the title + balance card. Frame with
+            topPhotoImg.height (zoom) + marginTop (vertical position); the card's
+            height ends just below the balance card so the rounded corners show. */}
+        <View style={[styles.topPhotoWrap, { height: titleH + (showIntake ? 24 : cardH + 36) }]}>
+          <Image source={HERO_IMG} style={styles.topPhotoImg} resizeMode="cover" />
+          <LinearGradient
+            colors={['rgba(13,13,13,0.28)', 'rgba(13,13,13,0)', 'rgba(13,13,13,0)', 'rgba(13,13,13,0.35)']}
+            locations={[0, 0.16, 0.72, 1]}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+        </View>
+        <View style={styles.heroTitleWrap} onLayout={(e) => setTitleH(e.nativeEvent.layout.height)}>
+          <Text style={styles.heroTitle} numberOfLines={1} adjustsFontSizeToFit>GIRL MATH</Text>
+          <Text style={styles.heroPepper}>* PEPPER IS {pepperMood}</Text>
+          <Text style={styles.heroHeadline}>{heroHeadline}</Text>
+          <Text style={styles.heroSub}>KNOW UR MATH, BESTIE</Text>
         </View>
 
+        <View style={styles.body}>
         {showIntake ? (
           <>
             <PepperBubble label="* PEPPER" variant="red">
@@ -499,55 +540,96 @@ export default function GirlMathScreen() {
           </>
         ) : (
           <>
-            {/* ACTIVE BALANCE — hero number */}
-            <View style={styles.floorCard}>
-              <Text style={styles.floorLabel}>ACTIVE BALANCE</Text>
-              <Text style={[styles.floorAmount, activeBalance < 0 && styles.floorAmountNegative]}>
+            {/* ACTIVE BALANCE — frosted glass card over the photo */}
+            <View style={styles.balanceShadow} onLayout={(e) => setCardH(e.nativeEvent.layout.height)}>
+            <View style={styles.balanceCard}>
+              <BlurView intensity={22} tint="light" style={StyleSheet.absoluteFill} />
+              {/* tinted lime gradient: pale chartreuse → olive (translucent so the
+                  hero photo bleeds through the frosted glass) */}
+              <LinearGradient
+                colors={['rgba(210,224,118,0.60)', 'rgba(172,194,68,0.58)', 'rgba(138,158,50,0.66)']}
+                locations={[0, 0.55, 1]}
+                start={{ x: 0.1, y: 0 }}
+                end={{ x: 0.9, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+              {/* white sheen across the top for the glossy frosted look */}
+              <LinearGradient
+                colors={['rgba(255,255,255,0.55)', 'rgba(255,255,255,0.0)']}
+                locations={[0, 0.5]}
+                style={StyleSheet.absoluteFill}
+                pointerEvents="none"
+              />
+              <View style={styles.balanceInner}>
+              {/* pill row: active-balance tab + cash-flow report action */}
+              <View style={styles.pillRow}>
+                <View style={[styles.pill, styles.pillActive]}>
+                  <Ionicons name="scale-outline" size={14} color={Colors.inkBlack} />
+                  <Text style={styles.pillActiveText}>ACTIVE BALANCE</Text>
+                </View>
+                <TouchableOpacity style={styles.pill} onPress={() => setReportModal(true)} activeOpacity={0.8}>
+                  <Ionicons name="document-text-outline" size={14} color={Colors.inkBlack} />
+                  <Text style={styles.pillText}>CASH FLOW REPORT{'{PDF}'}</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* the big number */}
+              <Text
+                style={[styles.balanceAmount, activeBalance < 0 && { color: Colors.berryPill }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+              >
                 {formatMoney(activeBalance, currency)}
               </Text>
-              <Text style={styles.floorSub}>
-                {formatMoney(startingBalance, currency)} start
-                {paidBillsTotal > 0 ? ` − ${formatMoney(paidBillsTotal, currency)} paid` : ''}
-                {receivedIncomeTotal > 0 ? ` + ${formatMoney(receivedIncomeTotal, currency)} in` : ''}
-              </Text>
-              {(billsTotal > 0 || incomeTotal > 0) && (
-                <View style={styles.incomeBadge}>
-                  <Ionicons name="git-compare" size={14} color={Colors.pickleLime} />
-                  <Text style={styles.incomeText}>
-                    projected {formatMoney(projectedBalance, currency)} after {formatMoney(billsTotal, currency)} bills{incomeTotal > 0 ? ` / +${formatMoney(incomeTotal, currency)} due` : ''}
+              <TouchableOpacity
+                onPress={() => { setEditField('cash_available'); setEditValue(entry?.cash_available?.toString() || ''); }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.balanceSub}>
+                  {formatMoney(startingBalance, currency)} START
+                  {paidBillsTotal > 0 ? ` − ${formatMoney(paidBillsTotal, currency)} PAID` : ''}
+                  {receivedIncomeTotal > 0 ? ` + ${formatMoney(receivedIncomeTotal, currency)} IN` : ''}
+                </Text>
+              </TouchableOpacity>
+
+              {/* nested projected card — brighter chartreuse gradient + sheen */}
+              <View style={styles.projectedCard}>
+                <LinearGradient
+                  colors={['rgba(212,236,62,0.97)', 'rgba(176,199,46,0.97)']}
+                  start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                />
+                <LinearGradient
+                  colors={['rgba(255,255,255,0.5)', 'rgba(255,255,255,0)']}
+                  locations={[0, 0.55]}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                <View style={styles.projectedIcon}>
+                  <Ionicons name="arrow-up" size={28} color={Colors.inkBlack} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.projectedLabel}>PROJECTED AFTER BILLS + INCOMING</Text>
+                  <Text
+                    style={[styles.projectedAmount, projectedBalance < 0 && { color: Colors.berryPill }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {formatMoney(projectedBalance, currency)}
                   </Text>
                 </View>
-              )}
-            </View>
-
-            {/* Quick stats — starting balance editable; bills/income left are derived */}
-            <View style={styles.quickRow}>
-              <TouchableOpacity style={styles.quickTile} onPress={() => { setEditField('cash_available'); setEditValue(entry?.cash_available?.toString() || ''); }}>
-                <Text style={styles.quickLabel}>STARTING</Text>
-                <Text style={styles.quickValue}>{formatMoney(startingBalance, currency)}</Text>
-              </TouchableOpacity>
-              <View style={styles.quickTile}>
-                <Text style={styles.quickLabel}>BILLS LEFT</Text>
-                <Text style={[styles.quickValue, { color: Colors.brightRed }]}>{formatMoney(billsTotal, currency)}</Text>
               </View>
-              <View style={styles.quickTile}>
-                <Text style={styles.quickLabel}>INCOMING</Text>
-                <Text style={[styles.quickValue, { color: Colors.pickleLime }]}>{formatMoney(incomeTotal, currency)}</Text>
               </View>
             </View>
+            </View>
 
-            {/* Cash-flow PDF report */}
-            <TouchableOpacity style={styles.reportBtn} onPress={() => setReportModal(true)}>
-              <Ionicons name="document-text-outline" size={16} color={Colors.text} />
-              <Text style={styles.reportBtnText}>CASH FLOW REPORT (PDF)</Text>
-            </TouchableOpacity>
-
-            {/* Category carousel — square cards, horizontal scroll */}
+            {/* Category carousel — square cards, horizontal scroll. marginTop =
+                the black gap between the rounded photo card and these cards. */}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.cardScroll}
-              style={{ marginBottom: Spacing.md }}
+              style={{ marginTop: 50, marginBottom: Spacing.md, marginHorizontal: -Layout.screenPadding }}
             >
               {([
                 { key: 'bills', label: 'BILLS', value: billsTotal, count: unpaidBills.length, color: Colors.brightRed, sub: `${unpaidBills.length} unpaid` },
@@ -559,87 +641,101 @@ export default function GirlMathScreen() {
                 return (
                   <TouchableOpacity
                     key={c.key}
-                    style={[styles.squareCard, active && styles.squareCardActive]}
+                    style={[styles.catCard, active && styles.catCardActiveGlow]}
                     activeOpacity={0.85}
                     onPress={() => setActiveCard(c.key)}
                   >
-                    <Text style={[styles.squareCardLabel, active && { color: c.color }]}>{c.label}</Text>
-                    <Text style={styles.squareCardValue}>{formatMoney(c.value, currency)}</Text>
-                    <Text style={styles.squareCardSub}>{c.sub}</Text>
-                    {active && <View style={[styles.squareCardBar, { backgroundColor: c.color }]} />}
+                    {active ? (
+                      <View style={[StyleSheet.absoluteFill, styles.catCardActiveFill]} />
+                    ) : (
+                      <>
+                        <LinearGradient
+                          colors={['rgba(214,228,150,0.96)', 'rgba(176,206,74,0.96)']}
+                          start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
+                          style={StyleSheet.absoluteFill}
+                        />
+                        <LinearGradient
+                          colors={['rgba(255,255,255,0.55)', 'rgba(255,255,255,0)']}
+                          locations={[0, 0.5]}
+                          style={StyleSheet.absoluteFill}
+                          pointerEvents="none"
+                        />
+                      </>
+                    )}
+                    <View style={styles.catCardTop}>
+                      <Text style={[styles.catCardLabel, { color: active ? Colors.limeElectric : Colors.inkBlack }]}>{c.label}</Text>
+                      <View style={[styles.catCount, { backgroundColor: active ? Colors.limeElectric : 'rgba(13,13,13,0.18)' }]}>
+                        <Text style={[styles.catCountText, { color: active ? Colors.inkBlack : Colors.inkBlack }]}>{c.count}</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.catCardValue, { color: active ? Colors.saltBone : Colors.inkBlack }]}>{formatMoney(c.value, currency)}</Text>
+                    <Text style={[styles.catCardSub, { color: active ? Colors.textSubtle : 'rgba(13,13,13,0.6)' }]}>{c.sub.toUpperCase()}</Text>
                   </TouchableOpacity>
                 );
               })}
             </ScrollView>
 
-            {/* Itemized Bills */}
-            {activeCard === 'bills' && (<>
-            <Text style={styles.sectionLabel}>BILLS.</Text>
-            <Text style={styles.sectionHint}>sorted by due date. overdue at the top.</Text>
+            {/* Itemized Bills — branded rows inside a lime panel */}
+            {activeCard === 'bills' && (
+            <LinearGradient
+              colors={['#D7E388', '#C4D85E']}
+              start={{ x: 0, y: 0 }} end={{ x: 0, y: 1 }}
+              style={styles.limePanel}
+            >
+            <Text style={styles.panelTitle}>BILLS.</Text>
+            <Text style={styles.panelHint}>SORTED BY DUE DATE. OVERDUE AT THE TOP</Text>
             {visibleBills.map((b: any) => {
               const idx = allBills.indexOf(b);
               const days = b.due_date ? daysFromToday(b.due_date) : null;
               const overdue = days != null && days < 0;
-              const dueSoon = days != null && days >= 0 && days <= 3;
+              const due = b.due_date
+                ? overdue ? `OVERDUE · ${Math.abs(days!)}d ago`
+                  : days === 0 ? 'due today'
+                  : `due in ${days}d${b.recurring ? ` ${b.recurring}` : ''}`
+                : (b.recurring || 'no date');
               return (
-                <CategoryCard
-                  key={`bill-${idx}`}
-                  title={`${b.label}  ·  ${formatMoney(b.amount, currency)}`}
-                  subtitle={
-                    b.due_date
-                      ? overdue
-                        ? `OVERDUE · ${Math.abs(days!)}d ago`
-                        : days === 0
-                          ? 'due today'
-                          : `due in ${days}d${b.recurring ? ` · ${b.recurring}` : ''}`
-                      : b.recurring || 'no date'
-                  }
-                  icon="receipt"
-                  variant={overdue ? 'red' : dueSoon ? 'lilac' : 'dark'}
-                  onPress={() => openBillEditor(idx)}
-                  rightSlot={
-                    <TouchableOpacity onPress={() => toggleBillPaid(idx)} style={styles.paidBtn}>
-                      <Text style={styles.paidBtnText}>MARK PAID</Text>
+                <TouchableOpacity key={`bill-${idx}`} style={styles.billRow} activeOpacity={0.85} onPress={() => openBillEditor(idx)}>
+                  <BrandLogo label={b.label} size={48} />
+                  <View style={styles.billMid}>
+                    <Text style={styles.billName} numberOfLines={1}>{b.label}</Text>
+                    <Text style={styles.billAmtRed}>· {formatMoney(b.amount, currency)}</Text>
+                    <Text style={[styles.billDue, overdue && { color: Colors.berryPill }]} numberOfLines={1}>{due}</Text>
+                  </View>
+                  <View style={styles.billRight}>
+                    <Text style={styles.billAmtBig}>{formatMoney(b.amount, currency)}</Text>
+                    <TouchableOpacity onPress={() => toggleBillPaid(idx)} style={styles.paidPill}>
+                      <Text style={styles.paidPillText}>PAID?</Text>
                     </TouchableOpacity>
-                  }
-                />
+                  </View>
+                </TouchableOpacity>
               );
             })}
             {sortedUnpaidBills.length > DEFAULT_VISIBLE && (
-              <TouchableOpacity style={styles.seeAllBtn} onPress={() => setShowAllBills((v) => !v)}>
-                <Text style={styles.seeAllText}>
+              <TouchableOpacity style={styles.panelSeeAll} onPress={() => setShowAllBills((v) => !v)}>
+                <Text style={styles.panelSeeAllText}>
                   {showAllBills ? `SHOW LESS` : `SEE ALL · ${sortedUnpaidBills.length}`}
                 </Text>
-                <Ionicons name={showAllBills ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+                <Ionicons name={showAllBills ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.inkBlack} />
               </TouchableOpacity>
             )}
-            <CategoryCard
-              title="+ ADD BILL"
-              subtitle={unpaidBills.length > 0 ? `${formatMoney(billsTotal, currency)} unpaid · ${unpaidBills.length} item${unpaidBills.length === 1 ? '' : 's'}` : 'rent, utilities, subscriptions...'}
-              icon="add-circle"
-              variant="red"
-              onPress={() => openBillEditor(null)}
-            />
+            <TouchableOpacity style={styles.addBillBtn} onPress={() => openBillEditor(null)} activeOpacity={0.85}>
+              <Ionicons name="add" size={20} color={Colors.inkBlack} />
+              <Text style={styles.addBillText}>ADD BILL</Text>
+            </TouchableOpacity>
             {paidBills.length > 0 && (
-              <Text style={[styles.sectionHint, { marginTop: Spacing.xs }]}>
-                ✓ {paidBills.length} paid this period (tap to undo)
-              </Text>
+              <Text style={styles.paidHint}>✓ {paidBills.length} PAID THIS PERIOD (TAP TO UNDO)</Text>
             )}
             {paidBills.slice(0, 5).map((b) => {
               const idx = allBills.indexOf(b);
               return (
-                <TouchableOpacity
-                  key={`paid-${idx}`}
-                  style={styles.paidRow}
-                  onPress={() => toggleBillPaid(idx)}
-                >
-                  <Ionicons name="checkmark-circle" size={16} color={Colors.pickleLime} />
+                <TouchableOpacity key={`paid-${idx}`} style={styles.paidRow} onPress={() => toggleBillPaid(idx)}>
+                  <Ionicons name="checkmark-circle" size={16} color={Colors.limeDeep} />
                   <Text style={styles.paidRowText}>{b.label} · {formatMoney(b.amount, currency)}</Text>
                 </TouchableOpacity>
               );
             })}
-
-            </>)}
+            </LinearGradient>
+            )}
 
             {/* Itemized Income */}
             {activeCard === 'income' && (<>
@@ -677,7 +773,7 @@ export default function GirlMathScreen() {
                 <Text style={styles.seeAllText}>
                   {showAllIncome ? `SHOW LESS` : `SEE ALL · ${sortedPendingIncome.length}`}
                 </Text>
-                <Ionicons name={showAllIncome ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+                <Ionicons name={showAllIncome ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.inkBlack} />
               </TouchableOpacity>
             )}
             <CategoryCard
@@ -733,7 +829,7 @@ export default function GirlMathScreen() {
                 <Text style={styles.seeAllText}>
                   {showAllDoom ? `SHOW LESS` : `SEE ALL · ${sortedDoom.length}`}
                 </Text>
-                <Ionicons name={showAllDoom ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+                <Ionicons name={showAllDoom ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.inkBlack} />
               </TouchableOpacity>
             )}
             <CategoryCard title="+ LOG A DOOM SPEND" subtitle={totalDoom > 0 ? `${formatMoney(totalDoom, currency)} this week` : 'no shame. just data.'} icon="add-circle" variant="red" onPress={() => setDoomModal(true)} />
@@ -769,7 +865,7 @@ export default function GirlMathScreen() {
                 <Text style={styles.seeAllText}>
                   {showAllSoft ? `SHOW LESS` : `SEE ALL · ${weeklySoft.length}`}
                 </Text>
-                <Ionicons name={showAllSoft ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.text} />
+                <Ionicons name={showAllSoft ? 'chevron-up' : 'chevron-down'} size={14} color={Colors.inkBlack} />
               </TouchableOpacity>
             )}
             <CategoryCard title="+ STASH A SMALL WIN" subtitle={totalSoft > 0 ? `${formatMoney(totalSoft, currency)} stashed this week` : 'every bit counts.'} icon="add-circle" variant="lime" onPress={() => setSoftModal(true)} />
@@ -794,8 +890,48 @@ export default function GirlMathScreen() {
                 : `Floor holds. ${totalSoft > 0 ? `You stashed ${formatMoney(totalSoft, currency)}. Cute.` : 'Try one soft save today.'}`
               }
             </PepperBubble>
+
+            {/* ASK PEPPER — aurora frosted entry card */}
+            <View style={styles.askGlow}>
+              <View style={styles.askCard}>
+                <LinearGradient
+                  colors={['#E9E84C', '#F0B23C', '#E87E9C']}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                />
+                <LinearGradient
+                  colors={['rgba(240,170,70,0.55)', 'rgba(255,255,255,0)', 'rgba(232,120,156,0.5)']}
+                  start={{ x: 1, y: 0 }} end={{ x: 0, y: 1 }}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                <LinearGradient
+                  colors={['rgba(255,255,255,0.35)', 'rgba(255,255,255,0)']}
+                  locations={[0, 0.5]}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                <View style={styles.askInner}>
+                  <View style={styles.askTop}>
+                    <Text style={styles.askTitle}>ASK PEPPER</Text>
+                    <TouchableOpacity style={styles.askExpand} onPress={openPepper} accessibilityLabel="Open PEPPER">
+                      <Ionicons name="expand-outline" size={20} color={Colors.inkBlack} />
+                    </TouchableOpacity>
+                  </View>
+                  <TouchableOpacity style={styles.askPill} onPress={() => setSoftModal(true)} activeOpacity={0.85}>
+                    <Text style={styles.askPillText}>TRY ONE SOFT SAVE TODAY</Text>
+                    <View style={styles.askPlus}><Ionicons name="add" size={16} color={Colors.inkBlack} /></View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.askDump} onPress={openPepper} activeOpacity={0.85}>
+                    <View style={styles.askMic}><Ionicons name="mic" size={18} color={Colors.saltBone} /></View>
+                    <Text style={styles.askDumpText}>DUMP A BILL OR RANT</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
           </>
         )}
+        </View>
 
         <View style={{ height: 100 }} />
       </ScrollView>
@@ -994,58 +1130,82 @@ export default function GirlMathScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Layout.screenPadding, paddingBottom: 120 },
-  hero: { marginBottom: Spacing.lg },
-  heroLabel: { fontSize: Typography.fontSize.xs, color: Colors.pickleLime, fontWeight: '800', letterSpacing: 3, marginBottom: 6 },
-  heroTitle: { fontSize: Typography.fontSize.display, fontWeight: '900', color: Colors.text, letterSpacing: 1 },
-  heroSub: { fontSize: Typography.fontSize.base, color: Colors.textSubtle, fontStyle: 'italic', marginTop: 4 },
-  floorCard: {
-    backgroundColor: Colors.pickleLime,
-    borderRadius: BorderRadius.xxl,
-    padding: Spacing.xl,
-    marginBottom: Spacing.md,
+  content: { paddingBottom: 120 },
+  body: { paddingHorizontal: Layout.screenPadding },
+  // Photo backs the top section down to the bills panel (absolute, bleeds under
+  // the status bar). The title + frosted cards flow over it.
+  // Rounded-bottom photo card. Height ends just below the balance card so the
+  // rounded corners peek out; matches the bills panel's top radius (HERO_RADIUS).
+  topPhotoWrap: {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    overflow: 'hidden', backgroundColor: '#9c9a98',
+    borderBottomLeftRadius: 34, borderBottomRightRadius: 34,
   },
-  floorLabel: { fontSize: Typography.fontSize.xs, color: Colors.inkBlack, fontWeight: '800', letterSpacing: 2, opacity: 0.7, marginBottom: Spacing.sm },
-  floorAmount: { fontSize: 56, fontWeight: '900', color: Colors.inkBlack, letterSpacing: -1 },
-  floorAmountNegative: { color: Colors.brightRed },
-  floorSub: { fontSize: Typography.fontSize.sm, color: Colors.inkBlack, opacity: 0.65, marginTop: Spacing.sm, fontWeight: '600' },
-  incomeBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: Colors.inkBlack,
-    paddingHorizontal: Spacing.md, paddingVertical: 6,
-    borderRadius: BorderRadius.full,
-    alignSelf: 'flex-start',
-    marginTop: Spacing.md,
+  topPhotoImg: { width: '100%', height: 1180, marginTop: -360 }, // marginTop = vertical framing
+  heroTitleWrap: { paddingHorizontal: Layout.screenPadding, paddingTop: 215, paddingBottom: 14 },
+  heroTitle: {
+    fontFamily: Typography.fontFamily.display, // Horizon (stand-in: ArchivoBlack)
+    fontSize: 64, color: Colors.limeBright, letterSpacing: 1,
+    textShadowColor: 'rgba(201,242,63,0.45)', textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 18,
   },
-  incomeText: { color: Colors.pickleLime, fontSize: Typography.fontSize.xs, fontWeight: '700', letterSpacing: 1 },
-  quickRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.lg },
-  quickTile: {
-    flex: 1,
-    backgroundColor: Colors.charcoalRaised,
-    padding: Spacing.md,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1, borderColor: Colors.border,
+  heroPepper: {
+    fontFamily: Typography.fontFamily.mono, // IBM Plex Mono
+    fontSize: 13, color: Colors.limeElectric, letterSpacing: 3, marginTop: 10,
   },
-  quickLabel: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '700', letterSpacing: 1, marginBottom: 4 },
-  quickValue: { fontSize: Typography.fontSize.lg, color: Colors.text, fontWeight: '800' },
-  // Horizontal category carousel
-  cardScroll: { gap: Spacing.sm, paddingVertical: Spacing.xs, paddingRight: Spacing.md },
-  squareCard: {
-    width: 130, height: 130,
-    backgroundColor: Colors.charcoalRaised,
-    borderRadius: BorderRadius.lg,
-    borderWidth: 1, borderColor: Colors.border,
-    padding: Spacing.md,
-    justifyContent: 'space-between',
+  heroHeadline: {
+    fontFamily: Typography.fontFamily.headline, // Anton
+    fontSize: 40, color: Colors.saltBone, marginTop: 2,
+    textShadowColor: 'rgba(0,0,0,0.35)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6,
   },
-  squareCardActive: { borderColor: Colors.text, backgroundColor: Colors.charcoalRaised, transform: [{ scale: 1.02 }] },
-  squareCardLabel: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '800', letterSpacing: 1 },
-  squareCardValue: { fontSize: Typography.fontSize.xl, color: Colors.text, fontWeight: '900' },
-  squareCardSub: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle },
-  squareCardBar: { height: 3, borderRadius: 2, marginTop: 2 },
-  // History
-  reportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: Spacing.sm, marginBottom: Spacing.sm, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.charcoalRaised },
-  reportBtnText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '800', letterSpacing: 1 },
+  heroSub: {
+    fontFamily: Typography.fontFamily.mono,
+    fontSize: Typography.fontSize.sm, color: Colors.saltBone, letterSpacing: 3, marginTop: 6,
+  },
+  // ---- Frosted-glass lime balance card ----
+  balanceShadow: {
+    borderRadius: 30, marginBottom: Spacing.md,
+    shadowColor: '#000', shadowOpacity: 0.45, shadowRadius: 22, shadowOffset: { width: 0, height: 14 }, elevation: 12,
+  },
+  balanceCard: {
+    borderRadius: 30, overflow: 'hidden',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)',
+  },
+  balanceInner: { padding: 26 },
+  pillRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.md },
+  pill: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 12, borderRadius: BorderRadius.full,
+    borderWidth: 1.5, borderColor: 'rgba(13,13,13,0.5)',
+  },
+  pillActive: { backgroundColor: 'rgba(13,13,13,0.12)' },
+  pillText: { fontFamily: Typography.fontFamily.mono, fontSize: 10, color: Colors.inkBlack, letterSpacing: 1 },
+  pillActiveText: { fontFamily: Typography.fontFamily.mono, fontSize: 10, color: Colors.inkBlack, letterSpacing: 1, fontWeight: '700' },
+  balanceAmount: { fontFamily: Typography.fontFamily.display, fontSize: 66, color: Colors.inkBlack, letterSpacing: -1, marginTop: 4 },
+  balanceSub: { fontFamily: Typography.fontFamily.mono, fontSize: 13, color: Colors.inkBlack, opacity: 0.85, letterSpacing: 1, marginTop: 6, marginBottom: Spacing.lg },
+  projectedCard: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    borderRadius: 24, padding: Spacing.lg, overflow: 'hidden',
+  },
+  projectedIcon: {
+    width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.7)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.65)',
+  },
+  projectedLabel: { fontFamily: Typography.fontFamily.mono, fontSize: 11, color: Colors.inkBlack, opacity: 0.72, letterSpacing: 1 },
+  projectedAmount: { fontFamily: Typography.fontFamily.monoBold, fontSize: 32, color: Colors.inkBlack, marginTop: 2 }, // IBM Plex Mono Bold
+  // ---- Category carousel ----
+  cardScroll: { gap: Spacing.sm, paddingVertical: Spacing.xs, paddingLeft: Layout.screenPadding, paddingRight: Spacing.md },
+  catCard: { width: 200, borderRadius: 22, padding: Spacing.md, justifyContent: 'space-between', minHeight: 130, overflow: 'hidden' },
+  catCardActiveFill: { backgroundColor: '#2E390E' }, // dark olive (mockup BILLS card)
+  catCardActiveGlow: {
+    borderWidth: 1.5, borderColor: Colors.limeElectric,
+    shadowColor: Colors.limeElectric, shadowOpacity: 0.6, shadowRadius: 14, shadowOffset: { width: 0, height: 0 }, elevation: 8,
+  },
+  catCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: Spacing.sm },
+  catCardLabel: { fontFamily: Typography.fontFamily.display, fontSize: 18, letterSpacing: 0.5 },
+  catCount: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center' },
+  catCountText: { fontFamily: Typography.fontFamily.mono, fontSize: 12, fontWeight: '700' },
+  catCardValue: { fontFamily: Typography.fontFamily.mono, fontSize: 26, fontWeight: '700' },
+  catCardSub: { fontFamily: Typography.fontFamily.mono, fontSize: 10, letterSpacing: 1, marginTop: 4 },
   historyLink: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.sm, justifyContent: 'center' },
   historyLinkText: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, fontWeight: '700', letterSpacing: 1 },
   historyCard: { marginTop: 'auto', backgroundColor: Colors.charcoalRaised, borderTopLeftRadius: BorderRadius.lg, borderTopRightRadius: BorderRadius.lg, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border },
@@ -1059,6 +1219,37 @@ const styles = StyleSheet.create({
   weekItemAmt: { fontSize: Typography.fontSize.sm, color: Colors.text, fontWeight: '600' },
   sectionLabel: { fontSize: Typography.fontSize.xs, color: Colors.pickleLime, fontWeight: '800', letterSpacing: 2, marginTop: Spacing.lg },
   sectionHint: { fontSize: Typography.fontSize.xs, color: Colors.textSubtle, marginBottom: Spacing.md, fontStyle: 'italic' },
+  // ---- Lime bills panel + branded rows ----
+  // Full-bleed: breaks out of the body's horizontal padding to the screen edges.
+  limePanel: {
+    marginHorizontal: -Layout.screenPadding,
+    paddingHorizontal: Layout.screenPadding,
+    paddingTop: Spacing.xl, paddingBottom: 48,
+    borderTopLeftRadius: 34, borderTopRightRadius: 34,
+    marginTop: Spacing.lg,
+  },
+  panelTitle: { fontFamily: Typography.fontFamily.mono, fontSize: 22, fontWeight: '700', color: Colors.inkBlack, letterSpacing: 3, marginTop: 4 },
+  panelHint: { fontFamily: Typography.fontFamily.mono, fontSize: 12, fontStyle: 'italic', color: Colors.inkBlack, opacity: 0.7, letterSpacing: 1, marginBottom: Spacing.lg },
+  billRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#FFFFFF', borderRadius: 18, padding: 12, marginBottom: Spacing.sm,
+  },
+  billMid: { flex: 1, paddingHorizontal: Spacing.md },
+  billName: { fontSize: 18, fontWeight: '800', color: Colors.inkBlack },
+  billAmtRed: { fontFamily: Typography.fontFamily.mono, fontSize: 11, color: Colors.brightRed, marginTop: 2 },
+  billDue: { fontFamily: Typography.fontFamily.mono, fontSize: 11, color: '#8A8A8A', marginTop: 2 },
+  billRight: { alignItems: 'flex-end', gap: 8 },
+  billAmtBig: { fontSize: 18, fontWeight: '900', color: Colors.inkBlack },
+  paidPill: { backgroundColor: Colors.berryPill, paddingHorizontal: 16, paddingVertical: 7, borderRadius: BorderRadius.full },
+  paidPillText: { fontFamily: Typography.fontFamily.mono, fontSize: 11, color: '#FFFFFF', fontWeight: '700', letterSpacing: 1 },
+  panelSeeAll: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 10 },
+  panelSeeAllText: { fontFamily: Typography.fontFamily.mono, fontSize: 11, color: Colors.inkBlack, fontWeight: '700', letterSpacing: 1 },
+  addBillBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.inkBlack, borderRadius: BorderRadius.full, paddingVertical: 12, marginTop: 4,
+  },
+  addBillText: { fontFamily: Typography.fontFamily.mono, fontSize: 12, color: Colors.limeElectric, fontWeight: '700', letterSpacing: 2 },
+  paidHint: { fontFamily: Typography.fontFamily.mono, fontSize: 10, color: Colors.inkBlack, opacity: 0.6, letterSpacing: 1, marginTop: Spacing.md, marginBottom: 4 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
   editorScroll: { padding: Layout.screenPadding, paddingTop: 80 },
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
@@ -1084,8 +1275,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.sm,
   },
   paidRowText: {
+    fontFamily: Typography.fontFamily.mono,
     fontSize: Typography.fontSize.sm,
-    color: Colors.textSubtle,
+    color: 'rgba(13,13,13,0.55)',
     textDecorationLine: 'line-through',
   },
   receivedBtn: {
@@ -1104,18 +1296,55 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 10,
-    marginVertical: Spacing.xs,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.charcoalRaised,
+    gap: 6,
+    paddingVertical: 18,
+    marginVertical: Spacing.sm,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.32)',
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: 'rgba(255,255,255,0.45)',
+    shadowColor: Colors.limeElectric, shadowOpacity: 0.6, shadowRadius: 18, shadowOffset: { width: 0, height: 0 }, elevation: 6,
   },
   seeAllText: {
-    color: Colors.text,
+    fontFamily: Typography.fontFamily.mono,
+    color: Colors.inkBlack,
     fontSize: Typography.fontSize.xs,
-    fontWeight: '900',
-    letterSpacing: 1,
+    fontWeight: '700',
+    letterSpacing: 2,
   },
+  // ---- ASK PEPPER aurora card ----
+  askGlow: {
+    marginTop: Spacing.xl, borderRadius: 30,
+    shadowColor: '#F2C24A', shadowOpacity: 0.55, shadowRadius: 26, shadowOffset: { width: 0, height: 0 }, elevation: 12,
+  },
+  askCard: { borderRadius: 30, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)' },
+  askInner: { padding: Spacing.lg, gap: Spacing.md },
+  askTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  askTitle: { fontFamily: Typography.fontFamily.mono, fontSize: 24, fontWeight: '700', color: Colors.saltBone, letterSpacing: 6 },
+  askExpand: {
+    width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.35)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.5)',
+  },
+  askPill: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,255,255,0.32)', borderRadius: BorderRadius.full,
+    paddingVertical: 14, paddingLeft: 20, paddingRight: 8,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)',
+  },
+  askPillText: { fontFamily: Typography.fontFamily.mono, fontSize: 13, color: Colors.inkBlack, letterSpacing: 2 },
+  askPlus: {
+    width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.85)',
+  },
+  askDump: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: 'rgba(255,255,255,0.32)', borderRadius: BorderRadius.full,
+    paddingVertical: 12, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)',
+  },
+  askMic: {
+    width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(13,13,13,0.78)',
+  },
+  askDumpText: { fontFamily: Typography.fontFamily.mono, fontSize: 13, color: Colors.inkBlack, letterSpacing: 2 },
 });

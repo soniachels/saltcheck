@@ -4,12 +4,16 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from "react";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
+import { useAppFonts } from "@/src/hooks/use-app-fonts";
 
-// Keep the native splash visible from cold start until icon fonts register.
+// Keep the native splash visible from cold start until fonts register.
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const [loaded, error] = useIconFonts();
+  const [iconsLoaded, iconErr] = useIconFonts();
+  const [appFontsLoaded, appFontErr] = useAppFonts();
+  const loaded = iconsLoaded && appFontsLoaded;
+  const error = iconErr || appFontErr;
 
   useEffect(() => {
     if (loaded || error) {
