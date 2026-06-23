@@ -23,6 +23,7 @@ import { PepperBubble } from '../../src/components/PepperBubble';
 import { Button } from '../../src/components/Button';
 import { Input } from '../../src/components/Input';
 import { DatePicker } from '../../src/components/DatePicker';
+import { ChipPicker } from '../../src/components/ChipPicker';
 import { CompletedCalendar } from '../../src/components/CompletedCalendar';
 import { DateCarousel } from '../../src/components/DateCarousel';
 import { scheduleReengagement } from '../../src/utils/pepperNudges';
@@ -38,6 +39,16 @@ function localDate(d: Date = new Date()): string {
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+// Advance a YYYY-MM-DD by one recurrence period (for recurring tasks).
+function advanceDate(iso: string | undefined, period: string): string {
+  const base = iso ? new Date(iso + 'T00:00:00') : new Date();
+  const p = (period || '').toLowerCase();
+  if (p === 'weekly') base.setDate(base.getDate() + 7);
+  else if (p === 'biweekly') base.setDate(base.getDate() + 14);
+  else if (p === 'daily') base.setDate(base.getDate() + 1);
+  else base.setMonth(base.getMonth() + 1); // monthly default
+  return localDate(base);
+}
 import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { getPepperGreeting } from '../../src/utils/pepperMood';
@@ -50,7 +61,7 @@ export default function TodayScreen() {
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
   const [detailTask, setDetailTask] = useState<any>(null); // task shown in the read-only detail view
-  const [taskForm, setTaskForm] = useState<{ title: string; notes: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string; scheduled_date: string }>({ title: '', notes: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
+  const [taskForm, setTaskForm] = useState<{ title: string; notes: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string; scheduled_date: string; recurring: string }>({ title: '', notes: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '', recurring: '' });
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
@@ -203,10 +214,10 @@ export default function TodayScreen() {
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
-      setTaskForm({ title: task.title, notes: task.notes || '', next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task', scheduled_date: task.scheduled_date || '' });
+      setTaskForm({ title: task.title, notes: task.notes || '', next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task', scheduled_date: task.scheduled_date || '', recurring: task.recurring || '' });
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', notes: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
+      setTaskForm({ title: '', notes: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '', recurring: '' });
     }
     setSubtaskDraft('');
     setTaskModal(true);
@@ -227,6 +238,7 @@ export default function TodayScreen() {
       non_negotiable: taskForm.non_negotiable,
       kind: taskForm.kind,
       scheduled_date: taskForm.scheduled_date || null,
+      recurring: taskForm.recurring || null,
       status: editingTask?.status || 'not_started',
       parked: editingTask?.parked || false,
     };
@@ -254,6 +266,7 @@ export default function TodayScreen() {
       await syncLinkedPriority(task.id, nowDone);
     }
     if (!wasDone && nowDone) {
+      await spawnNextOccurrence(task);
       setPepperReaction(loopDoneReaction());
     }
     loadAll();
@@ -322,8 +335,24 @@ export default function TodayScreen() {
     await apiClient.put(`/tasks/${task.id}`, payload);
     // If this task is linked to a Top 3 priority, also sync
     await syncLinkedPriority(task.id, true);
+    await spawnNextOccurrence(task);
     setPepperReaction(loopDoneReaction());
     loadAll();
+  };
+
+  // Recurring task → create the next occurrence (fresh, dated one period later,
+  // sub-steps reset). Guard on the prior status so reopen→done can't double-spawn.
+  const spawnNextOccurrence = async (task: any) => {
+    if (!task.recurring || task.status === 'done') return;
+    const next: any = {
+      ...task,
+      status: 'not_started',
+      scheduled_date: advanceDate(task.scheduled_date || today, task.recurring),
+      deadline: task.deadline ? advanceDate(task.deadline, task.recurring) : null,
+      subtasks: (task.subtasks || []).map((s: any) => ({ title: s.title, done: false })),
+    };
+    ['id', 'user_id', 'created_at', 'updated_at', 'completed_at'].forEach((k) => delete next[k]);
+    try { await apiClient.post('/tasks', next, { params: { user_id: currentUserId } }); } catch (e) { console.error(e); }
   };
 
   // Rescue a past-due / past-scheduled loop by moving it to today.
@@ -622,6 +651,16 @@ export default function TodayScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Find duplicates — scans ALL active tasks across every day, not just open loops */}
+        {activeTasks.length > 1 && (
+          <TouchableOpacity style={styles.findDupBtn} onPress={checkRepeats} disabled={dedupeLoading} testID="check-repeats-btn">
+            {dedupeLoading
+              ? <ActivityIndicator size="small" color={Colors.softSpiceLilac} />
+              : <Ionicons name="git-compare" size={15} color={Colors.softSpiceLilac} />}
+            <Text style={styles.findDupText}>FIND DUPLICATES</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Top 3 — curated by PEPPER, or auto-filled from the day's schedule */}
         {topThree.length > 0 && (
           <>
@@ -735,7 +774,8 @@ export default function TodayScreen() {
                       <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.85} onPress={() => openDetail(t)}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                           {t.non_negotiable && !isAppt ? <Ionicons name="lock-closed" size={12} color={Colors.brightRed} /> : null}
-                          <Text style={styles.tlCardTitle} numberOfLines={1}>{t.title}</Text>
+                          {t.recurring ? <Ionicons name="repeat" size={13} color={Colors.softSpiceLilac} /> : null}
+                          <Text style={[styles.tlCardTitle, { flexShrink: 1 }]} numberOfLines={1}>{t.title}</Text>
                         </View>
                         {t.next_action ? <Text style={styles.tlCardSub} numberOfLines={1}>→ {t.next_action}</Text> : null}
                       </TouchableOpacity>
@@ -754,14 +794,6 @@ export default function TodayScreen() {
         <View style={styles.loopsHeader}>
           <Text style={styles.sectionLabel}>OPEN LOOPS.</Text>
           <View style={styles.loopsHeaderBtns}>
-            <TouchableOpacity onPress={checkRepeats} disabled={dedupeLoading} testID="check-repeats-btn">
-              <View style={styles.checkRepeatsBtn}>
-                {dedupeLoading
-                  ? <ActivityIndicator size="small" color={Colors.softSpiceLilac} />
-                  : <Ionicons name="git-compare" size={16} color={Colors.softSpiceLilac} />}
-                <Text style={styles.checkRepeatsText}>REPEATS?</Text>
-              </View>
-            </TouchableOpacity>
             <TouchableOpacity onPress={() => openTaskEditor()} testID="add-loop-btn">
               <View style={styles.addLoopBtn}>
                 <Ionicons name="add" size={18} color={Colors.saltBone} />
@@ -836,6 +868,7 @@ export default function TodayScreen() {
                     <View style={{ flex: 1 }}>
                       <View style={styles.loopTitleRow}>
                         {task.non_negotiable && <Ionicons name="lock-closed" size={12} color={Colors.brightRed} />}
+                        {task.recurring ? <Ionicons name="repeat" size={13} color={Colors.softSpiceLilac} /> : null}
                         <Text style={styles.loopTitle} numberOfLines={1}>{task.title}</Text>
                       </View>
                       <Text style={styles.loopPreview} numberOfLines={1}>
@@ -1021,6 +1054,15 @@ export default function TodayScreen() {
                 maxLength={5}
               />
 
+              <ChipPicker
+                label="REPEATS"
+                options={['one-time', 'daily', 'weekly', 'biweekly', 'monthly']}
+                value={taskForm.recurring || 'one-time'}
+                onChange={(v) => setTaskForm({ ...taskForm, recurring: v === 'one-time' ? '' : v })}
+                variant="lilac"
+                testIDPrefix="recurring"
+              />
+
               <TouchableOpacity
                 style={[styles.nnToggle, taskForm.non_negotiable && styles.nnToggleOn]}
                 onPress={() => setTaskForm({ ...taskForm, non_negotiable: !taskForm.non_negotiable })}
@@ -1123,6 +1165,9 @@ export default function TodayScreen() {
                   ) : null}
                   {detailTask.deadline ? (
                     <View style={[styles.detailChip, styles.detailChipRed]}><Text style={styles.detailChipText}>due {detailTask.deadline}</Text></View>
+                  ) : null}
+                  {detailTask.recurring ? (
+                    <View style={[styles.detailChip, styles.detailChipLilac]}><Text style={styles.detailChipText}>↻ {String(detailTask.recurring).toUpperCase()}</Text></View>
                   ) : null}
                 </View>
 
@@ -1294,6 +1339,7 @@ const styles = StyleSheet.create({
   detailChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.lg },
   detailChip: { backgroundColor: Colors.charcoalRaised, borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 6, borderWidth: 1, borderColor: Colors.border },
   detailChipRed: { borderColor: Colors.brightRed },
+  detailChipLilac: { borderColor: Colors.softSpiceLilac },
   detailChipText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '700', letterSpacing: 1 },
   detailLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 2, marginTop: Spacing.md, marginBottom: Spacing.xs },
   detailBody: { fontSize: Typography.fontSize.base, color: Colors.text, lineHeight: Typography.fontSize.base * 1.5 },
@@ -1364,6 +1410,12 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.softSpiceLilac,
   },
   checkRepeatsText: { color: Colors.softSpiceLilac, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
+  findDupBtn: {
+    flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6,
+    paddingHorizontal: Spacing.md, paddingVertical: 8, marginTop: Spacing.sm,
+    borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.softSpiceLilac,
+  },
+  findDupText: { color: Colors.softSpiceLilac, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
   dedupeCard: {
     backgroundColor: 'rgba(124,107,166,0.12)',
     borderWidth: 1, borderColor: Colors.softSpiceLilac,

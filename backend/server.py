@@ -176,6 +176,7 @@ class TaskCreate(BaseModel):
     non_negotiable: Optional[bool] = False  # must-do today; protected from parking/bumping
     kind: Optional[str] = "task"  # "task" | "appointment"
     scheduled_date: Optional[str] = None  # YYYY-MM-DD — which day it's planned for
+    recurring: Optional[str] = None  # null | "daily" | "weekly" | "biweekly" | "monthly" — spawns next on done
 
 class TaskResponse(BaseModel):
     id: str
@@ -193,6 +194,7 @@ class TaskResponse(BaseModel):
     non_negotiable: Optional[bool] = False
     kind: Optional[str] = "task"
     scheduled_date: Optional[str] = None
+    recurring: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -443,6 +445,7 @@ STRICT RULES FOR CLASSIFICATION (read carefully):
    - **TITLE must be SHORT and scannable — max ~5 words, no trailing detail.** Name it like a label, not a sentence. e.g. "Pitch deck for Naomi" NOT "Send the pitch deck to Naomi with the Q3 numbers by Thursday". Strip filler ("need to", "remember to").
    - **notes** — OPTIONAL one or two sentences of real detail/context from the dump (who/what/why/constraints) that doesn't fit the short title. ONLY include it when the dump actually gave extra detail; omit it (or null) for simple self-explanatory tasks. Don't pad or restate the title.
    - "next_action" is the single concrete first step; "deadline" is YYYY-MM-DD if user gave/implied a date.
+   - **recurring** — set to "daily"/"weekly"/"biweekly"/"monthly" ONLY when the user clearly means a repeating task ("every day", "weekly", "every Monday", "each month"). Otherwise omit it (one-time). A recurring task re-creates itself for the next period when the user marks it done.
    - Do NOT include money items or body items here.
 
 3. **bills** — Anything the user owes / has to pay (rent, credit card, utilities, phone, subscriptions, loans, fines, insurance, tuition, etc).
@@ -890,6 +893,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "time": loop_spec.get("time") or None,
                     "scheduled_date": clamp_future(loop_spec.get("scheduled_date") or None, today_str),
                     "kind": "task",
+                    "recurring": (loop_spec.get("recurring") or None),
                     "subtasks": subtasks,
                     "non_negotiable": bool(loop_spec.get("non_negotiable")),
                     "status": "not_started",
