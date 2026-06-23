@@ -379,7 +379,7 @@ Format your response as JSON with these keys:
   "quick_read": "One line emotional read",
   "salt_check": ["Move 1", "Move 2", "Move 3"],
   "loops_to_create": [
-    {"title": "Send pitch deck to Naomi", "next_action": "fix slide 4", "deadline": "2026-06-12", "scheduled_date": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "non_negotiable": false, "linked_priority_index": 0}
+    {"title": "Pitch deck for Naomi", "notes": "She wants the Q3 numbers and the new pricing slide before the Thursday call.", "next_action": "fix slide 4", "deadline": "2026-06-12", "scheduled_date": "2026-06-12", "time": "14:30", "subtasks": ["fix slide 4", "proof it", "email Naomi"], "non_negotiable": false, "linked_priority_index": 0}
   ],
   "schedule_updates": [{"title": "exact title of an EXISTING loop to re-schedule", "scheduled_date": "YYYY-MM-DD", "time": "HH:MM or null"}],
   "parked": ["Item 1", "Item 2"],
@@ -440,7 +440,9 @@ STRICT RULES FOR CLASSIFICATION (read carefully):
 2. **loops_to_create** — Open loops (tasks/projects) with optional deadlines.
    - For EACH salt_check item, ALSO create a matching loop with `linked_priority_index` set to that item's index (0/1/2). This keeps the Top 3 and the open loops in sync.
    - Add additional loops for items that aren't urgent enough for top 3 but still need to be tracked.
-   - "deadline" is YYYY-MM-DD if user gave/implied a date.
+   - **TITLE must be SHORT and scannable — max ~5 words, no trailing detail.** Name it like a label, not a sentence. e.g. "Pitch deck for Naomi" NOT "Send the pitch deck to Naomi with the Q3 numbers by Thursday". Strip filler ("need to", "remember to").
+   - **notes** — OPTIONAL one or two sentences of real detail/context from the dump (who/what/why/constraints) that doesn't fit the short title. ONLY include it when the dump actually gave extra detail; omit it (or null) for simple self-explanatory tasks. Don't pad or restate the title.
+   - "next_action" is the single concrete first step; "deadline" is YYYY-MM-DD if user gave/implied a date.
    - Do NOT include money items or body items here.
 
 3. **bills** — Anything the user owes / has to pay (rent, credit card, utilities, phone, subscriptions, loans, fines, insurance, tuition, etc).
@@ -882,6 +884,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                 task_doc = {
                     "user_id": user_id,
                     "title": title,
+                    "notes": (loop_spec.get("notes") or loop_spec.get("description") or None),
                     "next_action": loop_spec.get("next_action") or None,
                     "deadline": loop_spec.get("deadline") or None,
                     "time": loop_spec.get("time") or None,

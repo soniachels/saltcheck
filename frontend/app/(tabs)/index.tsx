@@ -49,7 +49,8 @@ export default function TodayScreen() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskModal, setTaskModal] = useState(false);
   const [editingTask, setEditingTask] = useState<any>(null);
-  const [taskForm, setTaskForm] = useState<{ title: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string; scheduled_date: string }>({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
+  const [detailTask, setDetailTask] = useState<any>(null); // task shown in the read-only detail view
+  const [taskForm, setTaskForm] = useState<{ title: string; notes: string; next_action: string; deadline: string; time: string; subtasks: { title: string; done: boolean }[]; non_negotiable: boolean; kind: string; scheduled_date: string }>({ title: '', notes: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
   const [subtaskDraft, setSubtaskDraft] = useState('');
   const [pepperReaction, setPepperReaction] = useState<string | null>(null);
   const [dayDone, setDayDone] = useState(false);
@@ -194,13 +195,18 @@ export default function TodayScreen() {
     setTodayEntry(r.data);
   };
 
+  // Tap a task → read-only detail view (Edit / Mark done / Delete inside).
+  const openDetail = (task: any) => setDetailTask(task);
+  const statusLabel = (s: string) =>
+    ({ not_started: 'TO DO', in_progress: 'IN PROGRESS', waiting: 'WAITING', done: 'DONE' } as Record<string, string>)[s] || 'TO DO';
+
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
-      setTaskForm({ title: task.title, next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task', scheduled_date: task.scheduled_date || '' });
+      setTaskForm({ title: task.title, notes: task.notes || '', next_action: task.next_action || '', deadline: task.deadline || '', time: task.time || '', subtasks: Array.isArray(task.subtasks) ? task.subtasks : [], non_negotiable: !!task.non_negotiable, kind: task.kind || 'task', scheduled_date: task.scheduled_date || '' });
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
+      setTaskForm({ title: '', notes: '', next_action: '', deadline: '', time: '', subtasks: [], non_negotiable: false, kind: 'task', scheduled_date: '' });
     }
     setSubtaskDraft('');
     setTaskModal(true);
@@ -213,6 +219,7 @@ export default function TodayScreen() {
     }
     const payload = {
       title: taskForm.title,
+      notes: taskForm.notes.trim() || null,
       next_action: taskForm.next_action,
       deadline: taskForm.deadline,
       time: taskForm.time.trim() || null,
@@ -416,10 +423,11 @@ export default function TodayScreen() {
   const doneTasks = tasks.filter((t) => t.status === 'done');
   const parkedTasks = tasks.filter((t) => t.parked);
 
-  // Overdue = past deadline OR scheduled for a day that's already gone (so
-  // past-scheduled loops resurface instead of vanishing into a dead day).
-  const overdueTasks = activeTasks.filter(
-    (t) => (t.deadline && t.deadline < today) || (t.scheduled_date && t.scheduled_date < today)
+  // Overdue = scheduled for a day that's already gone, OR (if not scheduled) a
+  // past deadline. A future scheduled_date SUPERSEDES an old deadline — moving a
+  // task to a later day clears the "overdue" nag instead of it lingering.
+  const overdueTasks = activeTasks.filter((t) =>
+    t.scheduled_date ? t.scheduled_date < today : (t.deadline && t.deadline < today)
   ).sort(byTime);
   const otherActiveTasks = activeTasks.filter(
     (t) => !t.deadline || t.deadline > today
@@ -708,18 +716,33 @@ export default function TodayScreen() {
                       <View style={[styles.tlDot, isAppt && styles.tlDotAppt]} />
                       {idx < timedTasks.length - 1 && <View style={styles.tlLine} />}
                     </View>
-                    <TouchableOpacity style={[styles.tlCard, isAppt && styles.tlCardAppt]} activeOpacity={0.85} onPress={() => openTaskEditor(t)}>
-                      {isAppt
-                        ? <Ionicons name="calendar" size={15} color={Colors.softSpiceLilac} />
-                        : t.non_negotiable ? <Ionicons name="lock-closed" size={12} color={Colors.brightRed} /> : null}
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.tlCardTitle} numberOfLines={1}>{t.title}</Text>
+                    <View style={[styles.tlCard, isAppt && styles.tlCardAppt]}>
+                      {isAppt ? (
+                        <Ionicons name="calendar" size={18} color={Colors.softSpiceLilac} />
+                      ) : (
+                        <TouchableOpacity
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}
+                          onPress={() => (t.status === 'done' ? reopenLoop(t) : markLoopDone(t))}
+                          accessibilityLabel={`Mark "${t.title}" done`}
+                        >
+                          <Ionicons
+                            name={t.status === 'done' ? 'checkmark-circle' : 'ellipse-outline'}
+                            size={22}
+                            color={t.status === 'done' ? Colors.pickleLime : Colors.steelBlueGrey}
+                          />
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.85} onPress={() => openDetail(t)}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          {t.non_negotiable && !isAppt ? <Ionicons name="lock-closed" size={12} color={Colors.brightRed} /> : null}
+                          <Text style={styles.tlCardTitle} numberOfLines={1}>{t.title}</Text>
+                        </View>
                         {t.next_action ? <Text style={styles.tlCardSub} numberOfLines={1}>→ {t.next_action}</Text> : null}
-                      </View>
+                      </TouchableOpacity>
                       <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(t)}>
                         <Text style={styles.statusChipText}>{statusGlyph(t.status)}</Text>
                       </TouchableOpacity>
-                    </TouchableOpacity>
+                    </View>
                   </View>
                 );
               })}
@@ -808,7 +831,7 @@ export default function TodayScreen() {
                   <TouchableOpacity
                     style={styles.loopMain}
                     activeOpacity={0.8}
-                    onPress={() => (subs.length > 0 ? toggleExpand(task.id) : openTaskEditor(task))}
+                    onPress={() => openDetail(task)}
                   >
                     <View style={{ flex: 1 }}>
                       <View style={styles.loopTitleRow}>
@@ -822,7 +845,7 @@ export default function TodayScreen() {
                       </Text>
                     </View>
                     {subs.length > 0 && (
-                      <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textSubtle} />
+                      <Ionicons name="chevron-forward" size={18} color={Colors.textSubtle} />
                     )}
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(task)}>
@@ -944,7 +967,16 @@ export default function TodayScreen() {
                 label="WHAT IS IT?"
                 value={taskForm.title}
                 onChangeText={(t) => setTaskForm({ ...taskForm, title: t })}
-                placeholder="Send pitch deck"
+                placeholder="Short name, e.g. Pitch deck for Naomi"
+              />
+              <Input
+                label="DETAILS (OPTIONAL)"
+                value={taskForm.notes}
+                onChangeText={(t) => setTaskForm({ ...taskForm, notes: t })}
+                placeholder="Any extra context — who, what, why..."
+                multiline
+                numberOfLines={3}
+                style={{ minHeight: 72, textAlignVertical: 'top' }}
               />
               <Input
                 label="NEXT ACTION"
@@ -1070,6 +1102,77 @@ export default function TodayScreen() {
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Task detail — read-only view, with Edit / Mark done / Delete */}
+      <Modal visible={!!detailTask} animationType="slide" transparent onRequestClose={() => setDetailTask(null)}>
+        <View style={styles.modalOverlay}>
+          <ScrollView contentContainerStyle={styles.editorScroll}>
+            {detailTask && (
+              <View style={styles.editorCard}>
+                <View style={styles.detailHead}>
+                  {detailTask.non_negotiable && <Ionicons name="lock-closed" size={15} color={Colors.brightRed} />}
+                  <Text style={styles.detailTitle}>{detailTask.title}</Text>
+                </View>
+
+                <View style={styles.detailChips}>
+                  <View style={styles.detailChip}><Text style={styles.detailChipText}>{statusLabel(detailTask.status)}</Text></View>
+                  {detailTask.scheduled_date ? (
+                    <View style={styles.detailChip}>
+                      <Text style={styles.detailChipText}>{detailTask.scheduled_date}{detailTask.time ? ` · ${detailTask.time}` : ''}</Text>
+                    </View>
+                  ) : null}
+                  {detailTask.deadline ? (
+                    <View style={[styles.detailChip, styles.detailChipRed]}><Text style={styles.detailChipText}>due {detailTask.deadline}</Text></View>
+                  ) : null}
+                </View>
+
+                {detailTask.notes ? (
+                  <>
+                    <Text style={styles.detailLabel}>DETAILS</Text>
+                    <Text style={styles.detailBody}>{detailTask.notes}</Text>
+                  </>
+                ) : null}
+
+                {detailTask.next_action ? (
+                  <>
+                    <Text style={styles.detailLabel}>NEXT STEP</Text>
+                    <Text style={styles.detailBody}>→ {detailTask.next_action}</Text>
+                  </>
+                ) : null}
+
+                {Array.isArray(detailTask.subtasks) && detailTask.subtasks.length > 0 ? (
+                  <>
+                    <Text style={styles.detailLabel}>STEPS</Text>
+                    {detailTask.subtasks.map((st: any, i: number) => (
+                      <View key={i} style={styles.detailStep}>
+                        <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
+                        <Text style={[styles.detailStepText, st.done && { textDecorationLine: 'line-through', color: Colors.textSubtle }]}>{st.title}</Text>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
+
+                <View style={styles.editorActions}>
+                  <Button title="CLOSE" onPress={() => setDetailTask(null)} variant="ghost" />
+                  <Button title="EDIT" onPress={() => { const t = detailTask; setDetailTask(null); openTaskEditor(t); }} variant="secondary" />
+                </View>
+                <Button
+                  title={detailTask.status === 'done' ? 'REOPEN' : 'MARK DONE'}
+                  onPress={() => { const t = detailTask; setDetailTask(null); t.status === 'done' ? reopenLoop(t) : markLoopDone(t); }}
+                  variant="primary"
+                  style={{ marginTop: Spacing.md }}
+                />
+                <Button
+                  title="DELETE"
+                  onPress={() => { const id = detailTask.id; setDetailTask(null); deleteTask(id); }}
+                  variant="danger"
+                  style={{ marginTop: Spacing.md }}
+                />
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1185,6 +1288,17 @@ const styles = StyleSheet.create({
   nextWrap: { marginTop: Spacing.sm, gap: Spacing.sm },
   nextRow: { flexDirection: 'row', gap: Spacing.sm },
   editorActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
+  // ---- Task detail view ----
+  detailHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.md },
+  detailTitle: { flex: 1, fontSize: Typography.fontSize.xl, fontWeight: '900', color: Colors.text, letterSpacing: 0.5 },
+  detailChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.lg },
+  detailChip: { backgroundColor: Colors.charcoalRaised, borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 6, borderWidth: 1, borderColor: Colors.border },
+  detailChipRed: { borderColor: Colors.brightRed },
+  detailChipText: { fontSize: Typography.fontSize.xs, color: Colors.text, fontWeight: '700', letterSpacing: 1 },
+  detailLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 2, marginTop: Spacing.md, marginBottom: Spacing.xs },
+  detailBody: { fontSize: Typography.fontSize.base, color: Colors.text, lineHeight: Typography.fontSize.base * 1.5 },
+  detailStep: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 4 },
+  detailStepText: { flex: 1, fontSize: Typography.fontSize.base, color: Colors.text },
 
   // --- Redesign additions ---
   blob: { position: 'absolute', width: 260, height: 260, borderRadius: 130, opacity: 0.9 },
