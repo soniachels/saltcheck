@@ -779,9 +779,6 @@ export default function TodayScreen() {
                         </View>
                         {t.next_action ? <Text style={styles.tlCardSub} numberOfLines={1}>→ {t.next_action}</Text> : null}
                       </TouchableOpacity>
-                      <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(t)}>
-                        <Text style={styles.statusChipText}>{statusGlyph(t.status)}</Text>
-                      </TouchableOpacity>
                     </View>
                   </View>
                 );
@@ -874,15 +871,10 @@ export default function TodayScreen() {
                       <Text style={styles.loopPreview} numberOfLines={1}>
                         {subs.length > 0
                           ? (nextStep ? `next: ${nextStep}` : 'all steps done — close it')
-                          : task.next_action ? `→ ${task.next_action}` : task.deadline ? `due ${task.deadline}` : 'tap to edit'}
+                          : task.next_action ? `→ ${task.next_action}` : task.deadline ? `due ${task.deadline}` : 'tap for details'}
                       </Text>
                     </View>
-                    {subs.length > 0 && (
-                      <Ionicons name="chevron-forward" size={18} color={Colors.textSubtle} />
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.statusChip} onPress={() => cycleStatus(task)}>
-                    <Text style={styles.statusChipText}>{statusGlyph(task.status)}</Text>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.textSubtle} />
                   </TouchableOpacity>
                 </View>
                 {expanded && subs.length > 0 && (
@@ -938,7 +930,12 @@ export default function TodayScreen() {
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      <CompletedCalendar visible={calendarOpen} onClose={() => setCalendarOpen(false)} tasks={tasks} />
+      <CompletedCalendar
+        visible={calendarOpen}
+        onClose={() => setCalendarOpen(false)}
+        tasks={tasks}
+        onSelectTask={(t) => { setCalendarOpen(false); openDetail(t); }}
+      />
 
       {/* PEPPER plan review */}
       <Modal visible={planModal} animationType="slide" transparent onRequestClose={() => setPlanModal(false)}>

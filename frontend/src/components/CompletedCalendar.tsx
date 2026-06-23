@@ -8,6 +8,7 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   tasks: any[]; // all tasks; we read the done ones with completed_at
+  onSelectTask?: (task: any) => void; // tap a done task → open its detail (reopen/delete)
 }
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -16,7 +17,7 @@ const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 function pad(n: number) { return n < 10 ? `0${n}` : `${n}`; }
 function isoOf(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}`; }
 
-export const CompletedCalendar: React.FC<Props> = ({ visible, onClose, tasks }) => {
+export const CompletedCalendar: React.FC<Props> = ({ visible, onClose, tasks, onSelectTask }) => {
   const now = new Date();
   const [cursor, setCursor] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [selected, setSelected] = useState<string | null>(null);
@@ -108,10 +109,17 @@ export const CompletedCalendar: React.FC<Props> = ({ visible, onClose, tasks }) 
             <ScrollView style={styles.detail}>
               <Text style={styles.detailTitle}>{selected} · {selectedTasks.length} done</Text>
               {selectedTasks.map((t, i) => (
-                <View key={i} style={styles.detailRow}>
+                <TouchableOpacity
+                  key={i}
+                  style={styles.detailRow}
+                  onPress={() => onSelectTask?.(t)}
+                  disabled={!onSelectTask}
+                  activeOpacity={0.7}
+                >
                   <Ionicons name="checkmark-circle" size={16} color={Colors.pickleLime} />
                   <Text style={styles.detailText}>{t.title}</Text>
-                </View>
+                  {onSelectTask ? <Ionicons name="chevron-forward" size={15} color={Colors.textSubtle} style={{ marginLeft: 'auto' }} /> : null}
+                </TouchableOpacity>
               ))}
             </ScrollView>
           )}
