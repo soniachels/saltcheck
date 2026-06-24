@@ -1112,6 +1112,117 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
         raise HTTPException(status_code=500, detail=f"PEPPER is taking a break: {str(e)}")
 
 
+VERDICT_PROMPT = """You are PEPPER giving a fast gut-check on where the user stands RIGHT NOW. They didn't dump anything new — they just want your read on the current state of their day.
+
+You'll get: their open loops (with the day each is scheduled for), today's Top 3 (with which are done), their money, and their body. Judge the WHOLE picture together — don't fixate on one thing.
+
+Return ONLY this JSON, nothing else:
+{
+  "quick_read": "one short line — the real read on where they're at",
+  "next_sane_step": "the single most sensible next move given EVERYTHING above",
+  "money_check": "one short money note, or null",
+  "body_check": "one short body note, or null"
+}
+
+Voice: direct, funny, a little mean in a loving way. Max personality, minimum words. Don't list their tasks back to them. Don't invent anything that isn't in the data. If everything's genuinely handled, say so."""
+
+
+@app.post("/api/pepper/verdict")
+async def pepper_verdict(current: dict = Depends(get_current_user)):
+    """Re-judge the user's CURRENT state (no new dump) and refresh today's verdict.
+    Leaves the Top 3 untouched — only rewrites the verdict / next sane step."""
+    user_id = current["id"]
+    import json as _json
+    try:
+        today_str = user_today(current)
+        existing_tasks = []
+        async for t in tasks_collection.find(
+            {"user_id": user_id, "parked": {"$ne": True}, "status": {"$ne": "done"}}
+        ).limit(40):
+            existing_tasks.append({
+                "title": t.get("title"), "next_action": t.get("next_action"),
+                "deadline": t.get("deadline"), "time": t.get("time"),
+                "non_negotiable": bool(t.get("non_negotiable")),
+                "scheduled_date": t.get("scheduled_date"), "recurring": t.get("recurring"),
+            })
+        today_doc = await daily_entries_collection.find_one({"user_id": user_id, "date": today_str})
+        top3 = (today_doc or {}).get("top_priorities", []) or []
+        done = (today_doc or {}).get("priorities_done", []) or []
+        top3_state = [{"task": top3[i], "done": bool(done[i]) if i < len(done) else False} for i in range(len(top3))]
+
+        money_summary = None
+        money_doc = await money_entries_collection.find_one({"user_id": user_id})
+        if money_doc:
+            bills = money_doc.get("bills") or []
+            income = money_doc.get("income") or []
+            unpaid = [b for b in bills if not b.get("paid")]
+            start_bal = money_doc.get("cash_available") or 0
+            paid_total = sum((b.get("amount") or 0) for b in bills if b.get("paid"))
+            recv_total = sum((i.get("amount") or 0) for i in income if i.get("received"))
+            money_summary = {
+                "currency": money_doc.get("currency") or "USD",
+                "active_balance": round(start_bal - paid_total + recv_total, 2),
+                "unpaid_bills_total": round(sum((b.get("amount") or 0) for b in unpaid), 2),
+                "unpaid_bills_count": len(unpaid),
+            }
+        body_summary = None
+        latest_body = await body_logs_collection.find_one({"user_id": user_id}, sort=[("date", -1)])
+        if latest_body:
+            body_summary = {
+                "date": latest_body.get("date"), "mood": latest_body.get("mood"),
+                "sleep": latest_body.get("sleep"), "appetite": latest_body.get("appetite"),
+            }
+        try:
+            _now = datetime.now(ZoneInfo(current.get("timezone") or "UTC"))
+        except Exception:
+            _now = datetime.utcnow()
+        context = (
+            f"TODAY IS {_now.strftime('%Y-%m-%d')} ({_now.strftime('%A')})."
+            f"\nOPEN LOOPS: {_json.dumps(existing_tasks)}"
+            f"\nTODAY'S TOP 3 (with done flags): {_json.dumps(top3_state)}"
+            f"\nMONEY: {_json.dumps(money_summary)}"
+            f"\nBODY (latest): {_json.dumps(body_summary)}"
+            f"\n\nGive your verdict on where things stand. Return the JSON."
+        )
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"verdict_{user_id}_{datetime.utcnow().timestamp()}",
+            system_message=VERDICT_PROMPT,
+        ).with_model("openai", "gpt-4.1")
+        resp = await chat.send_message(UserMessage(text=context))
+        try:
+            ai = _json.loads(resp)
+        except Exception:
+            s = resp[resp.find("{"): resp.rfind("}") + 1]
+            ai = _json.loads(s)
+
+        next_sane_step = (ai.get("next_sane_step") or "").strip() or "Pick the one thing that'll bug you most if it's left undone. Do that."
+        patch = {
+            "next_sane_step": next_sane_step,
+            "money_action": ai.get("money_check"),
+            "medication_note": ai.get("body_check"),
+            "updated_at": datetime.utcnow(),
+        }
+        if today_doc:
+            await daily_entries_collection.update_one({"_id": today_doc["_id"]}, {"$set": patch})
+        else:
+            patch.update({
+                "user_id": user_id, "date": today_str, "created_at": datetime.utcnow(),
+                "water_checked": False, "food_checked": False, "hygiene_checked": False,
+            })
+            await daily_entries_collection.insert_one(patch)
+        return {
+            "quick_read": ai.get("quick_read"),
+            "next_sane_step": next_sane_step,
+            "money_check": ai.get("money_check"),
+            "body_check": ai.get("body_check"),
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"PEPPER couldn't re-read: {str(e)}")
+
+
 DEDUPE_PROMPT = """You are PEPPER. You're given the user's current OPEN LOOPS as a JSON list of {id, title}.
 Find groups that are the SAME task or clear duplicates/overlaps — even if worded differently (e.g. "Create graphic for Eric and Bada" and "Draft Eric & Bada poster" are the same).
 Be conservative: only group GENUINE duplicates, not merely related or sequential tasks.

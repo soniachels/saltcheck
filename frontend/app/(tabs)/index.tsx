@@ -71,11 +71,25 @@ export default function TodayScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [dedupeGroups, setDedupeGroups] = useState<any[]>([]);
   const [dedupeLoading, setDedupeLoading] = useState(false);
+  const [verdictLoading, setVerdictLoading] = useState(false);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await loadAll();
     setRefreshing(false);
+  };
+
+  // Ask PEPPER to re-judge the CURRENT state (no new dump) and refresh the verdict.
+  const rereadVerdict = async () => {
+    setVerdictLoading(true);
+    try {
+      await apiClient.post('/pepper/verdict');
+      await loadAll();
+    } catch (e) {
+      Alert.alert('Hmm', "PEPPER couldn't re-read right now.");
+    } finally {
+      setVerdictLoading(false);
+    }
   };
 
   // Ask PEPPER to scan open loops for duplicates worth merging.
@@ -592,7 +606,15 @@ export default function TodayScreen() {
           end={{ x: 1, y: 1 }}
           style={styles.verdict}
         >
-          <Text style={styles.verdictLabel}>PEPPER'S VERDICT</Text>
+          <View style={styles.verdictHead}>
+            <Text style={styles.verdictLabel}>PEPPER'S VERDICT</Text>
+            <TouchableOpacity onPress={rereadVerdict} disabled={verdictLoading} style={styles.rereadBtn} testID="reread-verdict" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              {verdictLoading
+                ? <ActivityIndicator size="small" color={Colors.brightRed} />
+                : <Ionicons name="refresh" size={14} color={Colors.brightRed} />}
+              <Text style={styles.rereadText}>{verdictLoading ? 'READING…' : 'RE-READ'}</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={styles.verdictMain}>
             {todayEntry?.next_sane_step
               || (topThree.length > 0 ? 'lock the top 3. ignore the rest.' : "dump to the flame. i'll cut it.")}
@@ -1349,7 +1371,10 @@ const styles = StyleSheet.create({
   backToTodayText: { color: Colors.brightRed, fontSize: Typography.fontSize.xs, fontWeight: '700', letterSpacing: 0.5 },
 
   verdict: { borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge, marginTop: Spacing.md, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  verdictLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 2, marginBottom: 6 },
+  verdictHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  verdictLabel: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 2 },
+  rereadBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.brightRed },
+  rereadText: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 1 },
   verdictMain: { fontSize: Typography.fontSize.lg, color: Colors.text, fontWeight: '800', lineHeight: Typography.fontSize.lg * 1.3 },
   verdictChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginTop: Spacing.md },
   verdictChip: { backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: BorderRadius.full, paddingHorizontal: Spacing.md, paddingVertical: 5, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
