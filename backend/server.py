@@ -134,17 +134,19 @@ class DailyEntryResponse(BaseModel):
     id: str
     user_id: str
     date: str
-    top_priorities: List[str]
+    # All defaulted so a partial daily entry (e.g. a verdict-only insert) still
+    # serializes instead of 500-ing on read.
+    top_priorities: List[str] = []
     priorities_done: List[bool] = []
     priorities_task_ids: List[Optional[str]] = []
-    water_checked: bool
-    food_checked: bool
-    hygiene_checked: bool
-    medication_note: Optional[str]
-    money_action: Optional[str]
-    work_action: Optional[str]
-    life_admin_action: Optional[str]
-    next_sane_step: Optional[str]
+    water_checked: bool = False
+    food_checked: bool = False
+    hygiene_checked: bool = False
+    medication_note: Optional[str] = None
+    money_action: Optional[str] = None
+    work_action: Optional[str] = None
+    life_admin_action: Optional[str] = None
+    next_sane_step: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -1209,6 +1211,8 @@ async def pepper_verdict(current: dict = Depends(get_current_user)):
             patch.update({
                 "user_id": user_id, "date": today_str, "created_at": datetime.utcnow(),
                 "water_checked": False, "food_checked": False, "hygiene_checked": False,
+                "top_priorities": [], "priorities_done": [], "priorities_task_ids": [],
+                "work_action": None, "life_admin_action": None,
             })
             await daily_entries_collection.insert_one(patch)
         return {
