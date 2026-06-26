@@ -714,6 +714,12 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
                     "kind": t.get("kind") or "task",
                     "scheduled_date": t.get("scheduled_date"),
                 })
+            # What they've finished in the last day — so PEPPER credits the wins.
+            completed_recent = []
+            async for t in tasks_collection.find(
+                {"user_id": user_id, "status": "done", "completed_at": {"$gte": datetime.utcnow() - timedelta(hours=24)}}
+            ).sort("completed_at", -1).limit(25):
+                completed_recent.append(t.get("title"))
             today_doc = await daily_entries_collection.find_one(
                 {"user_id": user_id, "date": user_today(current)}
             )
@@ -773,6 +779,7 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
             context_block = (
                 f"\n\nTODAY IS {_now.strftime('%Y-%m-%d')} ({_now.strftime('%A')}). "
                 f"Resolve any relative timing the user gives (today, tomorrow, Monday, this week) into YYYY-MM-DD dates."
+                f"\n\nDONE IN THE LAST DAY (they FINISHED these — credit the wins, never say they did nothing): {_json.dumps(completed_recent)}"
                 f"\n\nEXISTING OPEN LOOPS (do NOT duplicate these; ADD to them and flag contradictions): "
                 f"{_json.dumps(existing_tasks)}"
                 f"\nTODAY'S CURRENT TOP 3: {_json.dumps(existing_priorities)}"
@@ -1116,7 +1123,9 @@ async def pepper_checkin(checkin: AICheckInRequest, current: dict = Depends(get_
 
 VERDICT_PROMPT = """You are PEPPER giving a fast gut-check on where the user stands RIGHT NOW. They didn't dump anything new — they just want your read on the current state of their day.
 
-You'll get: their open loops (with the day each is scheduled for), today's Top 3 (with which are done), their money, and their body. Judge the WHOLE picture together — don't fixate on one thing.
+You'll get: what they've FINISHED in the last day, their still-open loops (with the day each is scheduled for), today's Top 3 (with which are done), their money, and their body. Judge the WHOLE picture together — don't fixate on one thing.
+
+If they've knocked things out, ACKNOWLEDGE it — give credit before you push. Never tell someone who just cleared tasks that they did nothing.
 
 Return ONLY this JSON, nothing else:
 {
@@ -1147,6 +1156,14 @@ async def pepper_verdict(current: dict = Depends(get_current_user)):
                 "non_negotiable": bool(t.get("non_negotiable")),
                 "scheduled_date": t.get("scheduled_date"), "recurring": t.get("recurring"),
             })
+        # What they've actually knocked out in the last day — so PEPPER credits
+        # the wins instead of reading "you've done nothing".
+        completed_recent = []
+        _day_ago = datetime.utcnow() - timedelta(hours=24)
+        async for t in tasks_collection.find(
+            {"user_id": user_id, "status": "done", "completed_at": {"$gte": _day_ago}}
+        ).sort("completed_at", -1).limit(25):
+            completed_recent.append(t.get("title"))
         today_doc = await daily_entries_collection.find_one({"user_id": user_id, "date": today_str})
         top3 = (today_doc or {}).get("top_priorities", []) or []
         done = (today_doc or {}).get("priorities_done", []) or []
@@ -1180,7 +1197,8 @@ async def pepper_verdict(current: dict = Depends(get_current_user)):
             _now = datetime.utcnow()
         context = (
             f"TODAY IS {_now.strftime('%Y-%m-%d')} ({_now.strftime('%A')})."
-            f"\nOPEN LOOPS: {_json.dumps(existing_tasks)}"
+            f"\nDONE IN THE LAST DAY (they FINISHED these — credit the wins, don't say they did nothing): {_json.dumps(completed_recent)}"
+            f"\nSTILL OPEN: {_json.dumps(existing_tasks)}"
             f"\nTODAY'S TOP 3 (with done flags): {_json.dumps(top3_state)}"
             f"\nMONEY: {_json.dumps(money_summary)}"
             f"\nBODY (latest): {_json.dumps(body_summary)}"
@@ -1306,6 +1324,46 @@ class OrganizeRequest(BaseModel):
     start_date: str  # YYYY-MM-DD
 
 
+def _local_plan(loops: list, start_date: str) -> list:
+    """Heuristic fallback planner (no AI). Ranks non-negotiables + nearest
+    deadlines first, then spreads ~3 tasks/day from start_date, clamping each to
+    its deadline. Appointments keep their slot. Same shape as the AI plan."""
+    try:
+        base = datetime.strptime(start_date, "%Y-%m-%d").date()
+    except Exception:
+        base = datetime.utcnow().date()
+    appts = [l for l in loops if (l.get("kind") == "appointment")]
+    tasks = [l for l in loops if (l.get("kind") != "appointment")]
+    tasks.sort(key=lambda l: (
+        0 if l.get("non_negotiable") else 1,
+        l.get("deadline") or "9999-12-31",
+        l.get("time") or "99:99",
+    ))
+    PER_DAY = 3
+    plan = []
+    for i, l in enumerate(tasks):
+        day_str = (base + timedelta(days=(i // PER_DAY))).isoformat()
+        dl = l.get("deadline")
+        if dl and day_str > dl:
+            day_str = dl if dl >= start_date else start_date
+        plan.append({
+            "task_id": l["id"], "title": l.get("title") or "",
+            "scheduled_date": day_str, "time": l.get("time"),
+            "rank": i + 1,
+            "reason": "non-negotiable" if l.get("non_negotiable") else ("deadline soon" if dl else "spread out"),
+            "non_negotiable": bool(l.get("non_negotiable")), "kind": l.get("kind") or "task",
+        })
+    for l in appts:
+        plan.append({
+            "task_id": l["id"], "title": l.get("title") or "",
+            "scheduled_date": l.get("scheduled_date") or start_date, "time": l.get("time"),
+            "rank": 0, "reason": "appointment",
+            "non_negotiable": bool(l.get("non_negotiable")), "kind": "appointment",
+        })
+    plan.sort(key=lambda x: (x.get("scheduled_date") or "9999", x.get("time") or "99:99", x.get("rank") or 99))
+    return plan
+
+
 @app.post("/api/pepper/organize")
 async def organize_loops(body: OrganizeRequest, current: dict = Depends(get_current_user)):
     """PEPPER ranks all open loops and spreads them across days/times."""
@@ -1325,43 +1383,51 @@ async def organize_loops(body: OrganizeRequest, current: dict = Depends(get_curr
             "scheduled_date": t.get("scheduled_date"),
         })
     if not loops:
-        return {"plan": [], "clarify": []}
+        return {"plan": [], "clarify": [], "planned_by": "ai"}
 
+    # Hybrid: try PEPPER (AI) with a SHORT timeout; if she stalls or errors, fall
+    # back to the instant local heuristic planner so this never hangs/times out.
+    import asyncio
+    by_id = {l["id"]: l for l in loops}
     try:
         chat = LlmChat(
             api_key=EMERGENT_LLM_KEY,
             session_id=f"organize_{user_id}_{datetime.utcnow().timestamp()}",
             system_message=ORGANIZE_PROMPT,
         ).with_model("openai", "gpt-4.1")
-        resp = await chat.send_message(UserMessage(text=f"TODAY: {body.start_date}\nOPEN LOOPS: {_json.dumps(loops)}\n\nReturn the JSON."))
+        resp = await asyncio.wait_for(
+            chat.send_message(UserMessage(text=f"TODAY: {body.start_date}\nOPEN LOOPS: {_json.dumps(loops)}\n\nReturn the JSON.")),
+            timeout=25,
+        )
         try:
             data = _json.loads(resp)
         except Exception:
             s = resp[resp.find("{"): resp.rfind("}") + 1]
             data = _json.loads(s)
+        plan = []
+        for p in (data.get("plan") or []):
+            tid = p.get("task_id")
+            if tid in by_id:
+                plan.append({
+                    "task_id": tid,
+                    "title": by_id[tid]["title"],
+                    "scheduled_date": clamp_future(p.get("scheduled_date"), body.start_date),
+                    "time": (p.get("time") if p.get("time") not in ("null", "") else None),
+                    "rank": p.get("rank"),
+                    "reason": p.get("reason") or "",
+                    "non_negotiable": by_id[tid]["non_negotiable"],
+                    "kind": by_id[tid]["kind"],
+                })
+        plan.sort(key=lambda x: (x.get("scheduled_date") or "9999", x.get("time") or "99:99", x.get("rank") or 99))
+        clarify = [c for c in (data.get("clarify") or []) if c.get("task_id") in by_id]
+        if not plan:  # AI returned nothing usable → use the local planner
+            return {"plan": _local_plan(loops, body.start_date), "clarify": [], "planned_by": "local"}
+        return {"plan": plan, "clarify": clarify, "planned_by": "ai"}
     except Exception as e:
+        # asyncio.TimeoutError, parse failure, provider error — never block the user.
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"PEPPER couldn't plan: {str(e)}")
-
-    by_id = {l["id"]: l for l in loops}
-    plan = []
-    for p in (data.get("plan") or []):
-        tid = p.get("task_id")
-        if tid in by_id:
-            plan.append({
-                "task_id": tid,
-                "title": by_id[tid]["title"],
-                "scheduled_date": clamp_future(p.get("scheduled_date"), body.start_date),
-                "time": (p.get("time") if p.get("time") not in ("null", "") else None),
-                "rank": p.get("rank"),
-                "reason": p.get("reason") or "",
-                "non_negotiable": by_id[tid]["non_negotiable"],
-                "kind": by_id[tid]["kind"],
-            })
-    plan.sort(key=lambda x: (x.get("scheduled_date") or "9999", x.get("time") or "99:99", x.get("rank") or 99))
-    clarify = [c for c in (data.get("clarify") or []) if c.get("task_id") in by_id]
-    return {"plan": plan, "clarify": clarify}
+        return {"plan": _local_plan(loops, body.start_date), "clarify": [], "planned_by": "local"}
 
 @app.get("/api/pepper/history/{user_id}", response_model=List[AICheckInResponse])
 async def get_pepper_history(user_id: str, limit: int = 10, current: dict = Depends(get_current_user)):
