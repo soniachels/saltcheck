@@ -1814,6 +1814,8 @@ async def transcribe_audio(file: UploadFile = File(...), current: dict = Depends
                     file=audio_file,
                     model="whisper-1",
                     response_format="json",
+                    language="en",  # force English — Whisper otherwise mis-detects
+                                    # a Malaysian-English accent as Malay sometimes
                 )
             
             # Extract text from result
