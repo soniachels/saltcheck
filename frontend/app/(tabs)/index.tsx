@@ -212,6 +212,17 @@ export default function TodayScreen() {
   const statusLabel = (s: string) =>
     ({ not_started: 'TO DO', in_progress: 'IN PROGRESS', waiting: 'WAITING', done: 'DONE' } as Record<string, string>)[s] || 'TO DO';
 
+  // Tick a sub-step from inside the detail view (updates the modal, the list, and persists).
+  const toggleDetailSubtask = async (idx: number) => {
+    if (!detailTask) return;
+    const subs = (detailTask.subtasks || []).map((s: any, i: number) => (i === idx ? { ...s, done: !s.done } : s));
+    setDetailTask({ ...detailTask, subtasks: subs });
+    setTasks((prev) => prev.map((t) => (t.id === detailTask.id ? { ...t, subtasks: subs } : t)));
+    const payload: any = { ...detailTask, subtasks: subs };
+    ['id', 'user_id', 'created_at', 'updated_at'].forEach((k) => delete payload[k]);
+    try { await apiClient.put(`/tasks/${detailTask.id}`, payload); } catch { loadAll(); }
+  };
+
   const openTaskEditor = (task?: any) => {
     if (task) {
       setEditingTask(task);
@@ -1147,12 +1158,12 @@ export default function TodayScreen() {
 
                 {Array.isArray(detailTask.subtasks) && detailTask.subtasks.length > 0 ? (
                   <>
-                    <Text style={styles.detailLabel}>STEPS</Text>
+                    <Text style={styles.detailLabel}>STEPS · TAP TO TICK</Text>
                     {detailTask.subtasks.map((st: any, i: number) => (
-                      <View key={i} style={styles.detailStep}>
-                        <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
+                      <TouchableOpacity key={i} style={styles.detailStep} onPress={() => toggleDetailSubtask(i)} activeOpacity={0.6}>
+                        <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={18} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
                         <Text style={[styles.detailStepText, st.done && { textDecorationLine: 'line-through', color: Colors.textSubtle }]}>{st.title}</Text>
-                      </View>
+                      </TouchableOpacity>
                     ))}
                   </>
                 ) : null}
