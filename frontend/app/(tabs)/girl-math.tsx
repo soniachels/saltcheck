@@ -22,6 +22,7 @@ import apiClient from '../../src/services/api';
 import { useAppStore } from '../../src/store/appStore';
 import { detectCurrency, formatMoney } from '../../src/utils/locale';
 import { generateCashflowPdf } from '../../src/utils/cashflowReport';
+import { scheduleBillReminders } from '../../src/utils/notifications';
 
 const REGRET_LABELS = ['none', 'a lil', 'medium', 'big', 'huge'];
 
@@ -169,6 +170,13 @@ export default function GirlMathScreen() {
 
   // Itemized bills/income
   const allBills = (entry?.bills || []) as any[];
+
+  // Local "due tomorrow" reminders — reschedule only when the bills actually
+  // change (label/amount/due/paid), not on every render.
+  const billsSig = JSON.stringify(allBills.map((b) => [b.label, b.amount, b.due_date, b.paid]));
+  useEffect(() => {
+    scheduleBillReminders(allBills, currency);
+  }, [billsSig, currency]);
   const allIncome = (entry?.income || []) as any[];
   const receivedIncome = allIncome.filter((i: any) => i.received);
   const pendingIncome = allIncome.filter((i: any) => !i.received);

@@ -16,6 +16,7 @@ Notifications.setNotificationHandler({
 
 const MORNING_ID_PREFIX = 'saltcheck-morning';
 const EVENING_ID_PREFIX = 'saltcheck-evening';
+const BILL_ID_PREFIX = 'saltcheck-bill';
 
 const MORNING_TITLES = [
   'New day, same chaos.',
@@ -149,5 +150,51 @@ export async function cancelAllReminders() {
     ) {
       await Notifications.cancelScheduledNotificationAsync(n.identifier);
     }
+  }
+}
+
+interface BillLike {
+  label?: string;
+  amount?: number;
+  due_date?: string; // YYYY-MM-DD
+  paid?: boolean;
+}
+
+/**
+ * Schedule a local reminder for each unpaid, future-dated bill — one day before
+ * its due date at 9am. Cancels + reschedules every time (call whenever bills
+ * change), so paid/removed bills drop their reminders. No server required.
+ */
+export async function scheduleBillReminders(bills: BillLike[], currency: string = 'USD'): Promise<void> {
+  if (Platform.OS === 'web') return;
+  // Clear previous bill reminders first.
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  for (const n of all) {
+    if (n.identifier.startsWith(BILL_ID_PREFIX)) {
+      await Notifications.cancelScheduledNotificationAsync(n.identifier);
+    }
+  }
+  const unpaid = (bills || []).filter((b) => !b.paid && !!b.due_date);
+  if (!unpaid.length) return;
+  if (!(await ensurePermissions())) return;
+
+  const now = Date.now();
+  let i = 0;
+  for (const b of unpaid) {
+    const remind = new Date(`${b.due_date}T09:00:00`); // 9am ON the due date...
+    if (isNaN(remind.getTime())) continue;
+    remind.setDate(remind.getDate() - 1); // ...then back up one day → 9am the day before
+    if (remind.getTime() <= now) continue; // reminder time already passed
+    const amt = b.amount != null ? `${currency} ${b.amount}` : '';
+    await Notifications.scheduleNotificationAsync({
+      identifier: `${BILL_ID_PREFIX}-${i++}`,
+      content: {
+        title: `💸 ${b.label || 'a bill'} due tomorrow`,
+        body: amt
+          ? `${amt} due ${b.due_date}. handle it before it handles you.`
+          : `${b.label || 'a bill'} is due ${b.due_date}. don't let it pile up.`,
+      },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: remind },
+    });
   }
 }
