@@ -8,9 +8,6 @@ import {
   Modal,
   Alert,
   ActivityIndicator,
-  LayoutAnimation,
-  Platform,
-  UIManager,
   RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -27,10 +24,6 @@ import { ChipPicker } from '../../src/components/ChipPicker';
 import { CompletedCalendar } from '../../src/components/CompletedCalendar';
 import { DateCarousel } from '../../src/components/DateCarousel';
 import { scheduleReengagement } from '../../src/utils/pepperNudges';
-
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
 
 // Local-time YYYY-MM-DD (NOT UTC) — so "today" matches the user's actual day.
 function localDate(d: Date = new Date()): string {
@@ -67,7 +60,6 @@ export default function TodayScreen() {
   const [dayDone, setDayDone] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => localDate());
-  const [expandedLoops, setExpandedLoops] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [dedupeGroups, setDedupeGroups] = useState<any[]>([]);
   const [dedupeLoading, setDedupeLoading] = useState(false);
@@ -164,11 +156,6 @@ export default function TodayScreen() {
     loadAll();
   };
 
-  const toggleExpand = (id: string) => {
-    LayoutAnimation.configureNext(LayoutAnimation.create(220, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
-    setExpandedLoops((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
   const today = localDate();
   const todayDate = new Date();
   const dayName = todayDate.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
@@ -262,27 +249,6 @@ export default function TodayScreen() {
       await apiClient.post(`/tasks?user_id=${currentUserId}`, payload);
     }
     setTaskModal(false);
-    loadAll();
-  };
-
-  const cycleStatus = async (task: any) => {
-    const order = ['not_started', 'in_progress', 'waiting', 'done'];
-    const next = order[(order.indexOf(task.status) + 1) % order.length];
-    const wasDone = task.status === 'done';
-    const nowDone = next === 'done';
-    const payload = { ...task, status: next };
-    delete payload.id;
-    delete payload.user_id;
-    delete payload.created_at;
-    delete payload.updated_at;
-    await apiClient.put(`/tasks/${task.id}`, payload);
-    if (wasDone !== nowDone) {
-      await syncLinkedPriority(task.id, nowDone);
-    }
-    if (!wasDone && nowDone) {
-      await spawnNextOccurrence(task);
-      setPepperReaction(loopDoneReaction());
-    }
     loadAll();
   };
 
@@ -460,7 +426,6 @@ export default function TodayScreen() {
 
   // Order by time-of-day: timed tasks first (chronological), untimed last.
   const byTime = (a: any, b: any) => (a.time || '99:99').localeCompare(b.time || '99:99');
-  const statusGlyph = (s: string) => (s === 'in_progress' ? '◐' : s === 'waiting' ? '◑' : '○');
 
   const activeTasks = tasks.filter((t) => !t.parked && t.status !== 'done');
   const doneTasks = tasks.filter((t) => t.status === 'done');
@@ -488,16 +453,6 @@ export default function TodayScreen() {
     .sort((a, b) => (b.non_negotiable ? 1 : 0) - (a.non_negotiable ? 1 : 0) || byTime(a, b));
 
   // Toggle a subtask's done flag and persist.
-  const toggleSubtask = async (task: any, idx: number) => {
-    const subtasks = (task.subtasks || []).slice();
-    if (!subtasks[idx]) return;
-    subtasks[idx] = { ...subtasks[idx], done: !subtasks[idx].done };
-    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, subtasks } : t)));
-    const payload = { ...task, subtasks };
-    delete payload.id; delete payload.user_id; delete payload.created_at; delete payload.updated_at;
-    try { await apiClient.put(`/tasks/${task.id}`, payload); } catch { loadAll(); }
-  };
-
   // Priority completion state
   const priorities: string[] = todayEntry?.top_priorities || [];
   const prioritiesDone: boolean[] = todayEntry?.priorities_done || [];
@@ -857,7 +812,6 @@ export default function TodayScreen() {
             const subs = (task.subtasks || []) as { title: string; done: boolean }[];
             const doneCount = subs.filter((s) => s.done).length;
             const complete = subs.length > 0 && doneCount === subs.length;
-            const expanded = !!expandedLoops[task.id];
             const nextStep = subs.find((s) => !s.done)?.title;
             return (
               <View key={task.id} style={[styles.loopCard, task.non_negotiable && styles.loopCardNN]}>
@@ -899,19 +853,6 @@ export default function TodayScreen() {
                     <Ionicons name="chevron-forward" size={18} color={Colors.textSubtle} />
                   </TouchableOpacity>
                 </View>
-                {expanded && subs.length > 0 && (
-                  <View style={styles.loopSteps}>
-                    {subs.map((st, i) => (
-                      <TouchableOpacity key={i} style={styles.loopStepRow} onPress={() => toggleSubtask(task, i)}>
-                        <Ionicons name={st.done ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={st.done ? Colors.pickleLime : Colors.steelBlueGrey} />
-                        <Text style={[styles.loopStepText, st.done && styles.subtaskTextDone]}>{st.title}</Text>
-                      </TouchableOpacity>
-                    ))}
-                    <TouchableOpacity onPress={() => openTaskEditor(task)}>
-                      <Text style={styles.loopEdit}>EDIT LOOP →</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
               </View>
             );
           })
@@ -1326,17 +1267,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   emptyText: { color: Colors.textSubtle, fontSize: Typography.fontSize.base, fontStyle: 'italic' },
-  statusChip: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.inkBlack,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusChipText: { color: Colors.pickleLime, fontSize: 18, fontWeight: '900' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)' },
   editorScroll: { padding: Layout.screenPadding, paddingTop: 80 },
   editorCard: { backgroundColor: Colors.charcoal, borderRadius: BorderRadius.xl, padding: Layout.cardPaddingLarge },
@@ -1420,18 +1350,8 @@ const styles = StyleSheet.create({
   ringEmptyDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.steelBlueGrey },
   loopTitle: { flexShrink: 1, color: Colors.text, fontSize: Typography.fontSize.base, fontWeight: '700' },
   loopPreview: { color: Colors.textSubtle, fontSize: Typography.fontSize.xs, marginTop: 1 },
-  loopSteps: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, paddingLeft: 58, gap: 6 },
-  loopStepRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  loopStepText: { fontSize: Typography.fontSize.sm, color: Colors.text },
-  loopEdit: { fontSize: Typography.fontSize.xs, color: Colors.brightRed, fontWeight: '800', letterSpacing: 1, marginTop: 4 },
 
   loopsHeaderBtns: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  checkRepeatsBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: Spacing.md, paddingVertical: 6,
-    borderRadius: BorderRadius.full, borderWidth: 1, borderColor: Colors.softSpiceLilac,
-  },
-  checkRepeatsText: { color: Colors.softSpiceLilac, fontSize: Typography.fontSize.xs, fontWeight: '800', letterSpacing: 1 },
   findDupBtn: {
     flexDirection: 'row', alignSelf: 'center', alignItems: 'center', gap: 6,
     paddingHorizontal: Spacing.md, paddingVertical: 8, marginTop: Spacing.sm,
